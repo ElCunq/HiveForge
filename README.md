@@ -1,12 +1,18 @@
-# 🐝 HiveForge
+<p align="center">
+  <img src="static/logo.svg" alt="HiveForge Logo" width="460">
+</p>
 
-> **Autonomous Multi-CLI Agent Team Mission Control & Orchestrator**  
-> Unified Real-Time Dark Cockpit & Terminal Control for **Google Antigravity (`agy`)**, **Anthropic Claude Code (`claude`)**, **OpenAI Codex (`codex`)**, **Aider (`aider`)**, **Ollama**, and Custom Agents.
+<p align="center">
+  <strong>Autonomous Multi-CLI Agent Team Mission Control & Orchestrator</strong><br>
+  Unified Real-Time Dark Cockpit & Terminal Control for <em>Google Antigravity (agy)</em>, <em>Anthropic Claude Code (claude)</em>, <em>OpenAI Codex (codex)</em>, <em>Aider (aider)</em>, <em>Ollama</em>, and Custom Agents.
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
-[![Python: 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
-[![Platform: Linux / macOS / WSL](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL-black.svg)](#)
-[![Architecture: Local--First](https://img.shields.io/badge/Architecture-Local--First%20%26%20Zero--Tmux-amber.svg)](#)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg" alt="License: MIT"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9%2B-blue.svg" alt="Python 3.9+"></a>
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL-black.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Architecture-Local--First%20%26%20Zero--Tmux-amber.svg" alt="Architecture">
+</p>
 
 ---
 

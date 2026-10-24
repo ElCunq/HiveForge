@@ -181,6 +181,20 @@ async def handle_index(request):
     return web.Response(text="index.html not found", status=404)
 
 
+async def handle_favicon(request):
+    fav = STATIC_DIR / "favicon.svg"
+    if fav.exists():
+        return web.FileResponse(fav, headers={"Content-Type": "image/svg+xml"})
+    return web.Response(status=404)
+
+
+async def handle_logo(request):
+    logo = STATIC_DIR / "logo.svg"
+    if logo.exists():
+        return web.FileResponse(logo, headers={"Content-Type": "image/svg+xml"})
+    return web.Response(status=404)
+
+
 async def api_list_teams(request):
     engine.sync_and_migrate()
     teams = []
@@ -748,6 +762,9 @@ def create_app():
     engine.sync_and_migrate()
     app = web.Application()
     app.router.add_get("/", handle_index)
+    app.router.add_get("/favicon.ico", handle_favicon)
+    app.router.add_get("/favicon.svg", handle_favicon)
+    app.router.add_get("/logo.svg", handle_logo)
     app.router.add_get("/api/teams", api_list_teams)
     app.router.add_get("/api/ecosystem", api_get_ecosystem)
     app.router.add_get("/api/team/{name}", api_get_team_info)
