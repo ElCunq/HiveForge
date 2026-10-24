@@ -629,6 +629,76 @@ def find_interactive_tmux_pane(cid: str = "", target: str = "") -> Optional[str]
     return None
 
 
+def sync_team_orchestration_doc(team_name: str, project_dir: str):
+    """Generates and syncs TEAM_ORCHESTRATION.md in the project directory so all agents know the team, roles, and rules."""
+    pdir = Path(project_dir) if project_dir else None
+    if not pdir or not pdir.exists():
+        return
+
+    with get_db() as conn:
+        team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
+        if not team:
+            return
+        agents = conn.execute("SELECT * FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)).fetchall()
+
+    doc_lines = [
+        f"# 🐝 HiveForge Takım Orkestrasyonu: {team_name.upper()}",
+        f"> Bu proje **HiveForge** otonom çoklu ajan (Multi-Agent) sistemi tarafından yönetilmektedir.",
+        "",
+        "## 👥 Takım Yapısı ve Roller",
+        f"- **Tech Lead (`@lead`)**: {team['lead_role']} [CLI: {(team['lead_runtime'] or 'agy').upper()}]",
+    ]
+    for ag in agents:
+        r_type = ag["runtime"] or "agy"
+        doc_lines.append(f"- **{ag['name']} (`{ag['target']}`)**: {ag['role']} [CLI: {r_type.upper()}]")
+
+    doc_lines.extend([
+        "",
+        "## 📡 Ajanlar Arası İletişim Kuralları",
+        "1. **Asenkron İletişim (`/btw`)**: Başka bir ajana veya tüm takıma bilgi, durum ya da istek iletmek için `/btw @hedef [mesaj]` formatını kullanın. HiveForge sistemi bu mesajları otomatik olarak ilgili ajanın bağlamına aktarır.",
+        "2. **Çakışma ve Dosya Kilitleri**: Ortak repoda başka bir ajanın değiştirdiği dosyaları ezmemek için `.locks/locks.json` dosyasını kontrol edin.",
+        "3. **Terminal ve Araçlar**: Terminal üzerinden `hive agents` veya `team agents` ile anlık takım durumunu görebilirsiniz.",
+        "",
+        f"*Otomatik oluşturuldu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+    ])
+
+    try:
+        (pdir / "TEAM_ORCHESTRATION.md").write_text("\n".join(doc_lines), encoding="utf-8")
+        (pdir / "AGENTS.md").write_text("\n".join(doc_lines), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: str) -> str:
+    """Injects orchestration context so every agent knows its identity, teammates, and /btw protocol."""
+    try:
+        with get_db() as conn:
+            team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
+            if not team:
+                return user_prompt
+            agents = conn.execute("SELECT target, name, role, runtime FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)).fetchall()
+
+        teammates = []
+        if target != "@lead":
+            teammates.append(f"@lead (Tech Lead: {team['lead_role']})")
+        for ag in agents:
+            if ag["target"] != target:
+                teammates.append(f"{ag['target']} ({ag['name']}: {ag['role']})")
+
+        teammates_str = ", ".join(teammates) if teammates else "Yok (Tekil Çalışma)"
+
+        ctx_prefix = (
+            f"[HIVEFORGE AGENT ORKESTRASYON BAĞLAMI]\n"
+            f"• Takım: {team_name} | Senin Rolün: {target} | Takım Arkadaşların: {teammates_str}\n"
+            f"• İletişim: Diğer ajanlara bilgi iletmek için cevabında veya notlarında `/btw @hedef [mesaj]` formatını kullan.\n"
+            f"• Dosya Kilitleri: Çakışmaları engellemek için ortak depodaki dosya kilitlerine (.locks/) dikkat et.\n"
+            f"--------------------------------------------------\n"
+        )
+        return ctx_prefix + user_prompt
+    except Exception:
+        return user_prompt
+
+
 async def execute_headless_agent_turn(
     team_name: str,
     target: str,
@@ -646,6 +716,7 @@ async def execute_headless_agent_turn(
     Multi-CLI Subprocess Runner:
     - 'agy': agy --mode auto -p ...
     - 'claude': claude --dangerously-skip-permissions -p ...
+    - 'codex': codex exec / run ...
     - 'aider': aider --message ... --yes-always
     - 'ollama': ollama run <model> ...
     - 'custom': custom CLI execution
@@ -653,6 +724,10 @@ async def execute_headless_agent_turn(
     task_key = f"{team_name}:{target}"
     wdir = workspace_dir if (workspace_dir and Path(workspace_dir).exists()) else str(Path.home())
     runtime = (runtime or "agy").lower().strip()
+
+    # Sync orchestration documents & inject team awareness into prompt
+    sync_team_orchestration_doc(team_name, wdir)
+    effective_prompt = build_agent_orchestration_prompt(team_name, target, prompt)
 
     cmd: List[str] = []
     before_cids = set()
@@ -667,26 +742,34 @@ async def execute_headless_agent_turn(
             cmd.extend(["--agent", persona])
         if cid:
             cmd.extend(["--conversation", cid])
-        cmd.extend(["-p", prompt])
+        cmd.extend(["-p", effective_prompt])
 
     elif runtime == "claude":
         cmd = ["claude", "--dangerously-skip-permissions"]
         if effort in ("low", "medium", "high"):
             cmd.extend(["--effort", effort])
-        cmd.extend(["-p", prompt])
+        cmd.extend(["-p", effective_prompt])
+
+    elif runtime == "codex":
+        # OpenAI Codex CLI runner
+        target_model = model or "gpt-4o"
+        cmd = ["codex"]
+        if model:
+            cmd.extend(["-m", target_model])
+        cmd.extend(["exec", effective_prompt] if shutil.which("codex") else ["run", effective_prompt])
 
     elif runtime == "aider":
-        cmd = ["aider", "--message", prompt, "--yes-always", "--no-git"]
+        cmd = ["aider", "--message", effective_prompt, "--yes-always", "--no-git"]
         if model:
             cmd.extend(["--model", model])
 
     elif runtime == "ollama":
         target_model = model or "llama3.2"
-        cmd = ["ollama", "run", target_model, prompt]
+        cmd = ["ollama", "run", target_model, effective_prompt]
 
     else:
         # Custom runtime command template
-        cmd = ["bash", "-c", f"{runtime} '{prompt}'"]
+        cmd = ["bash", "-c", f"{runtime} '{effective_prompt}'"]
 
     # Check CLI tool availability
     bin_name = cmd[0]

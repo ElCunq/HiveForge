@@ -1,38 +1,53 @@
-# 🚀 Sym-Vibe / AGY-Vibe
+# 🐝 HiveForge
 
 > **Autonomous Multi-CLI Agent Team Mission Control & Orchestrator**  
-> Unified Real-Time Dark Cockpit & Terminal Control for **Google Antigravity (`agy`)**, **Anthropic Claude Code (`claude`)**, **Aider (`aider`)**, **Ollama**, and Custom Agents.
+> Unified Real-Time Dark Cockpit & Terminal Control for **Google Antigravity (`agy`)**, **Anthropic Claude Code (`claude`)**, **OpenAI Codex (`codex`)**, **Aider (`aider`)**, **Ollama**, and Custom Agents.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
-[![Platform: Linux / macOS](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-black.svg)](#)
+[![Platform: Linux / macOS / WSL](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL-black.svg)](#)
 [![Architecture: Local--First](https://img.shields.io/badge/Architecture-Local--First%20%26%20Zero--Tmux-amber.svg)](#)
 
 ---
 
 ## ⚡ Overview
 
-**Sym-Vibe** solves the friction of orchestrating multiple autonomous AI coding agents working on large-scale codebases. Instead of juggling dozens of terminal tabs or relying on brittle tmux capture scripts, Sym-Vibe provides:
+**HiveForge** is an open-source, local-first mission control system that coordinates autonomous AI coding agents across multiple codebases. It bridges the gap between different AI CLI ecosystems, allowing teams composed of different LLM tools to collaborate seamlessly on shared repositories without deadlocks or clobbered edits.
 
-1. **Multi-CLI Runtime Engine**: Run different CLI tools side-by-side in the same project team. For instance, assign your Backend agent to `agy`, your Architecture Lead to `claude`, your Refactor specialist to `aider`, and your local code assistant to `ollama`.
-2. **Zero-Tmux Native Engine**: Autonomous background runners communicate with native process execution, persisting state atomically in SQLite and streaming pure structured Markdown, thinking tokens, and tool calls.
+### Key Capabilities
+
+1. **Multi-CLI Runtime Engine**:
+   - Mix and match agents powered by different engines in the same team:
+     - **Google Antigravity (`agy`)**: Full JSONL Brain telemetry, thinking process, Antigravity skills.
+     - **Anthropic Claude Code (`claude`)**: Direct terminal code execution, `--resume` turn continuity.
+     - **OpenAI Codex (`codex`)**: ChatGPT-powered coding engine via OpenAI CLI.
+     - **Aider (`aider`)**: Git-aware automated pair programming.
+     - **Ollama**: Local offline LLM execution (`llama3.2`, `qwen2.5-coder`, `deepseek-coder`).
+     - **Custom Scripts**: Any CLI tool or bash script template.
+2. **Built-in Orchestration & Team Context Awareness**:
+   - Every agent automatically knows about its teammates, their assigned roles, and communication rules.
+   - Generates and synchronizes `TEAM_ORCHESTRATION.md` and `AGENTS.md` directly inside your project repository.
+   - Dynamic prompt prefixing ensures that whichever CLI is used, the agent respects out-of-band communication (`/btw`) and file locks.
 3. **Dual Mission Control**:
-   - **Infinite Canvas Web Cockpit**: High-craft Obsidian/Amber industrial canvas with real-time reactive wires, agent status cards, quick-tool launchers, and Kanban boards.
-   - **Interactive Terminal Mission Control**: Jump right into any agent's live interactive session (`team open @target`), launch a multi-pane tmux mission control (`team tmux`), or stream colored telemetry logs (`team watch`).
-4. **Asynchronous Cross-Agent Messaging (`/btw`)**: Non-blocking out-of-band communication between agents and tech leads that prevents context deadlocks.
-5. **Conflict & File Locking Barrier**: Real-time detection and visualization of file locks across repositories to prevent agents from clobbering each other's changes.
+   - **Infinite Canvas Web Cockpit**: High-craft Obsidian/Amber industrial dark canvas with reactive wires, telemetry cards, tool execution chips, and Kanban boards.
+   - **Interactive Terminal Mission Control**: Live multi-pane tmux mission control (`hive tmux`), single-agent interactive jump-in (`hive open @target`), and colorized telemetry streaming (`hive watch`).
+4. **Asynchronous Cross-Agent Messaging (`/btw`)**:
+   - Non-blocking out-of-band communication between agents and tech leads (`/btw @target [note]`) that prevents context deadlocks.
+5. **Conflict & File Locking Barrier**:
+   - Real-time monitoring and visual indicators for file locks (`.locks/locks.json`) across submodules.
 
 ---
 
 ## 🧩 Supported CLI Runtimes
 
-| Runtime | CLI Command | Interaction Mode | Features Supported |
+| Runtime | CLI Command | Interaction Mode | Capabilities |
 | :--- | :--- | :--- | :--- |
 | **Google Antigravity** | `agy` | Headless & Interactive | Full JSONL Brain telemetry, thinking process, MCP tools, Antigravity skills |
-| **Anthropic Claude Code** | `claude` | Headless & Interactive | `--print`, `-p`, `--resume`, dangerous permissions skip, turn recording |
+| **Anthropic Claude Code** | `claude` | Headless & Interactive | `--print`, `-p`, `--resume`, permissions bypass, SQLite turn recording |
+| **OpenAI Codex** | `codex` | Headless & Interactive | ChatGPT coding engine, multi-file code synthesis |
 | **Aider** | `aider` | Headless & Interactive | Git-aware automated pair programming, multi-file edits |
-| **Ollama** | `ollama` | Local LLM Headless | Fully offline, private models (`llama3.2`, `qwen2.5-coder`, `deepseek-coder`) |
-| **Custom Script** | Shell script / binary | Headless | Reusable custom bots and CI validation pipelines |
+| **Ollama** | `ollama` | Local LLM Headless | Fully offline, private models (`llama3.2`, `qwen2.5-coder`) |
+| **Custom Script** | Shell command | Headless | Reusable custom bots and CI validation pipelines |
 
 ---
 
@@ -42,26 +57,27 @@
 flowchart TD
     subgraph UserInterfaces ["Control Interfaces"]
         WEB["Canvas Web Cockpit\n(http://127.0.0.1:4444)"]
-        CLI["Terminal CLI\n(team / team tmux / team open)"]
+        CLI["Terminal CLI\n(hive / team / cortex)"]
     end
 
-    subgraph CoreDaemon ["Sym-Vibe Core Daemon (server.py + engine.py)"]
+    subgraph CoreDaemon ["HiveForge Core Daemon (server.py + engine.py)"]
         API["aiohttp Web & WebSocket Server"]
         DB[(Atomic SQLite\n~/.agy-teams/state.db)]
+        DocSync["TEAM_ORCHESTRATION.md\n& AGENTS.md Sync Engine"]
         LockMgr["File Lock & Kanban Barrier"]
         EcoHub["Tool, Skill & MCP Hub"]
     end
 
     subgraph AgentRunners ["Multi-CLI Execution Subprocesses"]
-        AGY_LEAD["Tech Lead\n(agy / claude)"]
-        AGY_WORKER["Backend Worker\n(agy)"]
-        CLAUDE_WORKER["Security Auditor\n(claude)"]
-        OLLAMA_WORKER["Local Tester\n(ollama)"]
+        LEAD["Tech Lead\n(agy / claude)"]
+        CODEX_W["Backend API\n(codex)"]
+        CLAUDE_W["Security Auditor\n(claude)"]
+        OLLAMA_W["Local Tester\n(ollama)"]
     end
 
-    subgraph Workspaces ["Project Repositories & Workspaces"]
-        REPO1["/path/to/project/server"]
-        REPO2["/path/to/project/client"]
+    subgraph Workspaces ["Project Workspaces & Telemetry"]
+        REPO["Project Root Directory"]
+        DOCS["TEAM_ORCHESTRATION.md"]
         BRAIN["Brain JSONL & Turn Histories"]
     end
 
@@ -70,125 +86,103 @@ flowchart TD
     API <--> DB
     API <--> LockMgr
     API <--> EcoHub
-    API --> AGY_LEAD
-    API --> AGY_WORKER
-    API --> CLAUDE_WORKER
-    API --> OLLAMA_WORKER
+    API --> DocSync
+    API --> LEAD
+    API --> CODEX_W
+    API --> CLAUDE_W
+    API --> OLLAMA_W
 
-    AGY_LEAD --> REPO1
-    AGY_WORKER --> REPO1
-    CLAUDE_WORKER --> REPO2
-    OLLAMA_WORKER --> REPO2
-    AGY_LEAD -.-> BRAIN
-    AGY_WORKER -.-> BRAIN
+    DocSync --> DOCS
+    LEAD --> REPO
+    CODEX_W --> REPO
+    CLAUDE_W --> REPO
+    OLLAMA_W --> REPO
+    LEAD -.-> BRAIN
 ```
 
 ---
 
-## 📥 Installation
+## 📥 OS-Aware Installation
 
-### Quick Install (Recommended)
-
-Clone the repository and run the setup wizard:
+Clone the repository and run the universal installer:
 
 ```bash
-git clone https://github.com/your-username/sym-vibe.git
-cd sym-vibe
+git clone https://github.com/your-username/hiveforge.git
+cd hiveforge
 chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
-- Check for Python 3.9+ and install `aiohttp`.
-- Detect your installed AI CLI tools (`agy`, `claude`, `aider`, `ollama`, `tmux`).
-- Symlink the unified command `team` to `~/.local/bin/team`.
-- Set up an automated, self-healing systemd user service (`agy-vibe.service`).
+### What the Installer Does:
+- **Automatic OS Detection**: Supports Arch Linux, Debian/Ubuntu, Fedora/RHEL, openSUSE, Alpine, WSL, and macOS (Darwin / Apple Silicon & Intel).
+- **Tool Environment Scan**: Checks for `agy`, `claude`, `codex`, `aider`, `ollama`, and `tmux`.
+- **System Service Configuration**:
+  - **Linux**: Creates and starts a self-healing `systemd` user service (`hiveforge.service`).
+  - **macOS**: Configures a native `launchd` LaunchAgent (`com.hiveforge.orchestrator.plist`).
+  - **WSL / Non-Systemd**: Provides standalone daemon support.
+- **Unified CLI Linking**: Symlinks `hive`, `team`, and `cortex` into `~/.local/bin/`.
 
 ---
 
 ## 🚀 Quickstart & Usage
 
 ### 1. Launch Mission Control
-Simply run:
 ```bash
-team
+hive
+# or: team
 ```
-This automatically starts the background orchestrator (if not already running), opens the visual Web UI in your browser, and displays the live status dashboard in your terminal.
+Opens the web cockpit in your default browser and displays the live status dashboard in your terminal.
 
-### 2. View Active Agents
+### 2. View Active Agents & Runtimes
 ```bash
-team agents [team-name]
+hive agents [team-name]
 ```
-Displays an organized terminal table showing agent IDs, target tags (`@tag`), CLI runtimes (`AGY`, `CLAUDE`, etc.), current statuses (`IDLE`, `WORKING`), conversation IDs, and bound tools.
+Outputs an organized terminal table showing agent targets (`@tag`), CLI runtimes (`AGY`, `CLAUDE`, `CODEX`, etc.), statuses (`IDLE`, `WORKING`), conversation IDs, and bound tools.
 
 ### 3. Terminal Hacker Mode (Tmux Mission Control)
-If you love having multiple terminal panes monitoring your AI agents live:
 ```bash
-team tmux [team-name]
+hive tmux [team-name]
 ```
 Launches an interactive, mouse-enabled tmux session with a dedicated window per agent, synchronized with the orchestrator.
 
 ### 4. Direct Interactive Jump-In
-Need to manually guide an agent in full-screen terminal mode?
+Need to manually take over an agent in full-screen terminal mode?
 ```bash
-team open @backend
+hive open @backend
 ```
 Instantly launches the agent's interactive CLI (resuming its exact conversation context and working directory).
 
 ### 5. Send Tasks & Asynchronous Notes
 ```bash
 # Direct task assignment:
-team dispatch anikuro @backend "Write comprehensive integration tests for auth routes."
+hive dispatch anikuro @backend "Implement JWT rotation in auth middleware."
 
 # Non-blocking /btw note:
-team note anikuro @backend "/btw reminder: use argon2 for password hashing"
+hive note anikuro @backend "/btw reminder: use Argon2id for password hashes"
 ```
 
 ### 6. Live Stream Telemetry
 ```bash
-team watch [team-name] [target]
+hive watch [team-name] [target]
 ```
-Follows the real-time stream of thoughts, tool executions, and markdown responses in high-contrast color.
+Streams thoughts, tool calls, and markdown outputs in high-contrast color.
 
 ---
 
-## ⚙️ Configuration & Adding Agents
+## 👥 Team Context Awareness
 
-### Adding an Agent via CLI
-```bash
-team add-agent anikuro \
-  --name "Security Auditor" \
-  --role "OWASP Vulnerability Specialist" \
-  --target "@security" \
-  --runtime claude \
-  --persona "security-auditor" \
-  --effort high
-```
-
-### Adding an Agent via Web UI
-Click **"+ Ajan Ekle"** in the top navigation bar. In the modal:
-1. Enter Name and `@tag`.
-2. Choose your **CLI Engine** (`agy`, `claude`, `aider`, `ollama`, `custom`).
-3. Select optional Persona and Thinking Effort.
-4. Set the dedicated workspace subdirectory.
-
----
-
-## 🛠️ Tool & MCP Integration Hub
-
-Sym-Vibe automatically indexes all native Antigravity skills, Chrome DevTools plugins, MCP servers, and custom bash tools registered in SQLite:
-- Run one-off diagnostic commands (`git-status-diff`, `graphify-query`, `memory-sync`) directly from card header chips.
-- Add reusable custom tools via the Web UI's Tool Hub drawer or via `POST /api/tool/create`.
+When you run agents with HiveForge, every agent is automatically context-aware:
+1. **Dynamic turn context** is injected so the LLM knows its identity, teammates, and the `/btw` communication protocol.
+2. A persistent **`TEAM_ORCHESTRATION.md`** and **`AGENTS.md`** are automatically maintained in the project directory with current roles and guidelines.
 
 ---
 
 ## 🗑️ Uninstallation
 
-To cleanly remove the service and symlinks:
 ```bash
 ./uninstall.sh
 ```
-To purge all saved team states and SQLite databases as well:
+To also purge saved databases and configurations:
 ```bash
 ./uninstall.sh --purge
 ```

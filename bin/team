@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AGY-TEAM v3.0 / SYM-VIBE: Zero-Tmux Multi-CLI Agent Orchestrator
-# Compatible with: agy, claude, aider, ollama, custom scripts
+# HiveForge v3.5: Multi-CLI Autonomous Agent Team Orchestrator
+# Compatible with: agy, claude, codex, aider, ollama, custom scripts
 # ==============================================================================
 set -e
 
@@ -33,11 +33,12 @@ ensure_server_running() {
 cmd_help() {
   cat << 'EOF'
 ================================================================================
-  AGY-TEAM v3.0: Multi-CLI Agent Team Orchestration CLI
-  Engines: Google Antigravity (agy), Anthropic (claude), Aider, Ollama, Custom
+  HIVEFORGE v3.5: Multi-CLI Agent Team Orchestration CLI
+  Engines: Google Antigravity (agy), Anthropic (claude), OpenAI Codex (codex),
+           Aider (aider), Ollama Local LLM, and Custom Scripts
 ================================================================================
 Kullanım:
-  team                         # Kokpiti açar ve anlık durum tablosunu gösterir
+  hive / team                  # Kokpiti açar ve anlık durum tablosunu gösterir
   team list                    # Kayıtlı tüm takımları listeler
   team agents      [takım-adı] # Takımdaki ajanları, CLI motorlarını ve durumlarını listeler
   team tmux        [takım-adı] # Terminalde çok panelli canlı Tmux Mission Control açar (Ctrl+b)
@@ -47,7 +48,7 @@ Kullanım:
   team note        <takım> <@hedef> <not>    # /btw asenkron not iletir
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
   team tools       [list | run <takım> <hedef> <araç-id>]
-  team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|aider|ollama] [--model "..."]
+  team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|codex|aider|ollama] [--model "..."]
   team remove-agent <takım> <@hedef>
   team setup                   # Kurulum sihirbazını başlatır
 ================================================================================
@@ -411,6 +412,8 @@ print(f"\033[36mDizin: {wdir} | Motor: {runtime} | CID: {cid or 'yeni'}\033[0m\n
 if runtime == "claude":
     cmd = ["claude", "--dangerously-skip-permissions"]
     if cid: cmd.extend(["--resume", cid])
+elif runtime == "codex":
+    cmd = ["codex"]
 elif runtime == "aider":
     cmd = ["aider"]
 elif runtime == "ollama":

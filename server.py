@@ -316,6 +316,7 @@ async def api_configure_agent(request):
             ),
         )
         engine.export_agents_json(conn, team)
+        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
 
     return web.json_response({"success": True, "message": f"{name} ({target}) yapılandırması kaydedildi."})
 
@@ -497,6 +498,7 @@ async def api_create_team(request):
                 (name, aid, aname, arole, atarget, project_dir, aid - 1, now),
             )
         engine.export_agents_json(conn, name)
+        engine.sync_team_orchestration_doc(name, project_dir)
 
     return web.json_response({"success": True, "team": name, "project_dir": project_dir})
 
@@ -579,6 +581,7 @@ async def api_add_agent(request):
             ),
         )
         engine.export_agents_json(conn, team)
+        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
 
     return web.json_response({
         "success": True,
@@ -624,6 +627,7 @@ async def api_remove_agent(request):
         for idx, rem in enumerate(remaining):
             conn.execute("UPDATE agents SET aid = ?, pane = ? WHERE id = ?", (idx + 1, idx, rem["id"]))
         engine.export_agents_json(conn, team)
+        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
 
     return web.json_response({"success": True, "removed": found["name"], "target": found["target"]})
 

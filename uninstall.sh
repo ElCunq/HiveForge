@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AGY-VIBE / SYM-VIBE UNINSTALLER
+# HIVEFORGE UNINSTALLER
 # ==============================================================================
 set -e
 
@@ -11,29 +11,38 @@ COLOR_RED="\033[1;31m"
 
 INSTALL_BIN_DIR="$HOME/.local/bin"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-SERVICE_FILE="$SYSTEMD_USER_DIR/agy-vibe.service"
-BASE_DIR="${AGY_TEAMS_DIR:-$HOME/.agy-teams}"
+SERVICE_FILE="$SYSTEMD_USER_DIR/hiveforge.service"
+LEGACY_SERVICE="$SYSTEMD_USER_DIR/agy-vibe.service"
+MAC_PLIST="$HOME/Library/LaunchAgents/com.hiveforge.orchestrator.plist"
+BASE_DIR="${HIVE_TEAMS_DIR:-${AGY_TEAMS_DIR:-$HOME/.agy-teams}}"
 
-echo -e "${COLOR_AMBER}>>> AGY-Vibe / Sym-Vibe Kaldırma Aracı <<<${COLOR_RESET}\n"
+echo -e "${COLOR_AMBER}>>> HiveForge Kaldırma Aracı <<<${COLOR_RESET}\n"
 
-# 1. Systemd servisini durdur ve kaldır
-if [ -f "$SERVICE_FILE" ]; then
-  echo -e "• Systemd servisi durduruluyor ve kaldırılıyor..."
-  systemctl --user stop agy-vibe.service 2>/dev/null || true
-  systemctl --user disable agy-vibe.service 2>/dev/null || true
-  rm -f "$SERVICE_FILE"
+# 1. Systemd / LaunchAgent servisini durdur ve kaldır
+if command -v systemctl >/dev/null 2>&1; then
+  echo -e "• Linux Systemd servisi durduruluyor ve kaldırılıyor..."
+  systemctl --user stop hiveforge.service agy-vibe.service 2>/dev/null || true
+  systemctl --user disable hiveforge.service agy-vibe.service 2>/dev/null || true
+  rm -f "$SERVICE_FILE" "$LEGACY_SERVICE"
   systemctl --user daemon-reload 2>/dev/null || true
-  echo -e "  ${COLOR_GREEN}✓ Servis kaldırıldı.${COLOR_RESET}"
+  echo -e "  ${COLOR_GREEN}✓ Systemd servisi kaldırıldı.${COLOR_RESET}"
 fi
 
-# 2. Çalışan python server sürecini sonlandır
-echo -e "• Arka plan sunucu süreçleri temizleniyor..."
+if [ -f "$MAC_PLIST" ]; then
+  echo -e "• macOS LaunchAgent servisi kaldırılıyor..."
+  launchctl unload "$MAC_PLIST" 2>/dev/null || true
+  rm -f "$MAC_PLIST"
+  echo -e "  ${COLOR_GREEN}✓ LaunchAgent kaldırıldı.${COLOR_RESET}"
+fi
+
+# 2. Çalışan python server süreçlerini sonlandır
+echo -e "• Arka plan dinleyici süreçleri temizleniyor (Port 4444)..."
 fuser -k 4444/tcp 2>/dev/null || true
 
 # 3. Sembolik bağları sil
 echo -e "• CLI kısayolları kaldırılıyor..."
-rm -f "$INSTALL_BIN_DIR/team" "$INSTALL_BIN_DIR/agy-team"
-echo -e "  ${COLOR_GREEN}✓ $INSTALL_BIN_DIR/team ve agy-team silindi.${COLOR_RESET}"
+rm -f "$INSTALL_BIN_DIR/hive" "$INSTALL_BIN_DIR/team" "$INSTALL_BIN_DIR/cortex" "$INSTALL_BIN_DIR/agy-team"
+echo -e "  ${COLOR_GREEN}✓ CLI kısayolları silindi.${COLOR_RESET}"
 
 # 4. Veritabanı ve durum dosyaları
 if [ -d "$BASE_DIR" ]; then
@@ -45,4 +54,4 @@ if [ -d "$BASE_DIR" ]; then
   fi
 fi
 
-echo -e "\n${COLOR_GREEN}AGY-Vibe başarıyla kaldırıldı.${COLOR_RESET}\n"
+echo -e "\n${COLOR_GREEN}HiveForge başarıyla kaldırıldı.${COLOR_RESET}\n"
