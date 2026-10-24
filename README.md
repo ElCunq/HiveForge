@@ -107,8 +107,8 @@ flowchart TD
 Clone the repository and run the universal installer:
 
 ```bash
-git clone https://github.com/your-username/hiveforge.git
-cd hiveforge
+git clone https://github.com/ElCunq/HiveForge.git
+cd HiveForge
 chmod +x install.sh
 ./install.sh
 ```
