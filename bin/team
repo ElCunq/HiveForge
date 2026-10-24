@@ -1,0 +1,600 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# AGY-TEAM v3.0 / SYM-VIBE: Zero-Tmux Multi-CLI Agent Orchestrator
+# Compatible with: agy, claude, aider, ollama, custom scripts
+# ==============================================================================
+set -e
+
+# Detect repository directory portably (resolving symlinks)
+TARGET_FILE="${BASH_SOURCE[0]}"
+while [ -L "$TARGET_FILE" ]; do
+  TARGET_DIR="$(cd -P "$(dirname "$TARGET_FILE")" && pwd)"
+  TARGET_FILE="$(readlink "$TARGET_FILE")"
+  [[ $TARGET_FILE != /* ]] && TARGET_FILE="$TARGET_DIR/$TARGET_FILE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$TARGET_FILE")" && pwd)"
+ENGINE_DIR="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+
+export ENGINE_DIR
+BASE_DIR="${AGY_TEAMS_DIR:-$HOME/.agy-teams}"
+TEAMS_DIR="$BASE_DIR/teams"
+API_URL="${AGY_API_URL:-http://127.0.0.1:4444}"
+mkdir -p "$TEAMS_DIR"
+
+ensure_server_running() {
+  local port="${API_URL##*:}"
+  port="${port%%/*}"
+  if ! ss -tulpn 2>/dev/null | grep -q ":$port "; then
+    systemctl --user start agy-vibe.service 2>/dev/null || nohup python3 "$ENGINE_DIR/server.py" "$port" >/tmp/agy-ui.log 2>&1 &
+    sleep 0.8
+  fi
+}
+
+cmd_help() {
+  cat << 'EOF'
+================================================================================
+  AGY-TEAM v3.0: Multi-CLI Agent Team Orchestration CLI
+  Engines: Google Antigravity (agy), Anthropic (claude), Aider, Ollama, Custom
+================================================================================
+Kullanım:
+  team                         # Kokpiti açar ve anlık durum tablosunu gösterir
+  team list                    # Kayıtlı tüm takımları listeler
+  team agents      [takım-adı] # Takımdaki ajanları, CLI motorlarını ve durumlarını listeler
+  team tmux        [takım-adı] # Terminalde çok panelli canlı Tmux Mission Control açar (Ctrl+b)
+  team open        <@hedef>    # İlgili ajanın interaktif oturumuna terminalde tam ekran girer
+  team watch       [takım] [target] # Canlı Markdown, Düşünce ve Araç akışını terminalde izler
+  team dispatch    <takım> <@hedef> <mesaj>  # Görev iletir
+  team note        <takım> <@hedef> <not>    # /btw asenkron not iletir
+  team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
+  team tools       [list | run <takım> <hedef> <araç-id>]
+  team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|aider|ollama] [--model "..."]
+  team remove-agent <takım> <@hedef>
+  team setup                   # Kurulum sihirbazını başlatır
+================================================================================
+EOF
+}
+
+cmd_list() {
+  python3 - << 'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+engine.sync_and_migrate()
+print("=" * 110)
+print(f"{'TAKIM ADI':<15} {'MOTOR DURUMU':<16} {'AJAN':<8} {'LİDER ROLÜ':<32} {'PROJE DİZİNİ'}")
+print("=" * 110)
+with engine.get_db() as conn:
+    teams = conn.execute("SELECT * FROM teams ORDER BY name ASC").fetchall()
+    for t in teams:
+        cnt = conn.execute("SELECT COUNT(*) FROM agents WHERE team_name=?", (t["name"],)).fetchone()[0]
+        role = (t["lead_role"] or "")[:30]
+        pdir = t["project_dir"] or ""
+        print(f"{t['name']:<15} {'🟢 NATIVE READY':<16} {cnt:<8} {role:<32} {pdir}")
+print("=" * 110)
+PYEOF
+}
+
+cmd_agents() {
+  local name="${1:-anikuro}"
+  python3 - "$name" << 'PYEOF'
+import os, sys, json
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+tname = sys.argv[1]
+engine.sync_and_migrate()
+with engine.get_db() as conn:
+    team = conn.execute("SELECT * FROM teams WHERE name=?", (tname,)).fetchone()
+    if not team:
+        print(f"[HATA] '{tname}' takımı bulunamadı!")
+        sys.exit(1)
+    lcid = team["lead_cid"] or ""
+    lruntime = team["lead_runtime"] if "lead_runtime" in team.keys() and team["lead_runtime"] else "agy"
+    lsnap = engine.read_brain_snapshot(lcid, f"{tname}:@lead")
+    print("=" * 125)
+    print(f"TAKIM: {tname.upper()} | Proje Dizini: {team['project_dir']}")
+    print(f"TECH LEAD (@lead) | CLI: {lruntime.upper():<7} | CID: {lcid[:8] if lcid else 'new':<8} | Durum: {lsnap['status'].upper():<8} | Rol: {team['lead_role']}")
+    print("-" * 125)
+    print(f"{'ID':<4} {'HEDEF':<10} {'CLI':<8} {'AJAN ADI':<24} {'DURUM':<9} {'CID':<10} {'ARAÇ & SKILL':<22} {'ROL'}")
+    print("-" * 125)
+    rows = conn.execute("SELECT * FROM agents WHERE team_name=? ORDER BY aid ASC", (tname,)).fetchall()
+    for r in rows:
+        cid = r["cid"] or ""
+        r_runtime = r["runtime"] if "runtime" in r.keys() and r["runtime"] else "agy"
+        snap = engine.read_brain_snapshot(cid, f"{tname}:{r['target']}")
+        tools = json.loads(r["tools_json"] or "[]")
+        skills = json.loads(r["skills_json"] or "[]")
+        badge = f"{len(tools)} araç, {len(skills)} skill"
+        print(f"#{r['aid']:<3} {r['target']:<10} {r_runtime.upper():<8} {r['name'][:23]:<24} {snap['status'].upper():<9} {(cid[:8] if cid else 'new'):<10} {badge:<22} {r['role'][:30]}")
+    print("=" * 125)
+PYEOF
+}
+
+cmd_create() {
+  local name="$1"
+  shift || true
+  if [ -z "$name" ]; then
+    echo "Kullanım: team create <takım-adı> [proje-dizini] [--role \"Rol\"]"
+    exit 1
+  fi
+  local target_dir=""
+  local role="Genel Yazılım Takım Lideri (Tech Lead)"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) shift; role="$1" ;;
+      *) if [ -z "$target_dir" ]; then target_dir="$1"; fi ;;
+    esac
+    shift || true
+  done
+
+  ensure_server_running
+  python3 - "$name" "$target_dir" "$role" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+name, pdir, role, api_url = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+req = urllib.request.Request(
+    f"{api_url}/api/team/create",
+    data=json.dumps({"name": name, "project_dir": pdir, "role": role}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req) as resp:
+    res = json.loads(resp.read().decode("utf-8"))
+    if res.get("success"):
+        print(f"[OK] '{name}' takımı SQLite & Native Engine üzerinde oluşturuldu! ({res.get('project_dir')})")
+    else:
+        print(f"[HATA] {res.get('error')}")
+        sys.exit(1)
+PYEOF
+}
+
+cmd_add_agent() {
+  local team="$1"
+  shift || true
+  if [ -z "$team" ]; then
+    echo "Kullanım: team add-agent <takım> --name \"İsim\" --role \"Rol\" [--target \"@tag\"] [--runtime agy|claude|aider|ollama] [--model \"...\"]"
+    exit 1
+  fi
+
+  local aname="" arole="" atarget="" adir="" askills="" atools="" apersona="" aeffort="medium" acid="" aruntime="agy" amodel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name|-n) shift; aname="$1" ;;
+      --role|-r) shift; arole="$1" ;;
+      --target|-t) shift; atarget="$1" ;;
+      --runtime) shift; aruntime="$1" ;;
+      --model|-m) shift; amodel="$1" ;;
+      --dir|-d) shift; adir="$1" ;;
+      --skills|-s) shift; askills="$1" ;;
+      --tools) shift; atools="$1" ;;
+      --persona|-p) shift; apersona="$1" ;;
+      --effort|-e) shift; aeffort="$1" ;;
+      --cid) shift; acid="$1" ;;
+    esac
+    shift || true
+  done
+
+  ensure_server_running
+  python3 - "$team" "$aname" "$arole" "$atarget" "$adir" "$askills" "$atools" "$apersona" "$aeffort" "$acid" "$aruntime" "$amodel" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+team, name, role, target, pdir, skills_s, tools_s, persona, effort, cid, runtime, model, api_url = sys.argv[1:14]
+skills = [s.strip() for s in skills_s.split(",") if s.strip()]
+tools = [t.strip() for t in tools_s.split(",") if t.strip()] or ["git-status-diff", "memory-sync"]
+
+payload = {
+    "team": team,
+    "name": name,
+    "role": role,
+    "target": target,
+    "runtime": runtime or "agy",
+    "model": model,
+    "workspace_dir": pdir,
+    "skills": skills,
+    "tools": tools,
+    "persona": persona,
+    "effort": effort,
+    "cid": cid,
+}
+req = urllib.request.Request(
+    f"{api_url}/api/team/add-agent",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req) as resp:
+        res = json.loads(resp.read().decode("utf-8"))
+        if res.get("success"):
+            print(f"[OK] Yeni ajan eklendi: #{res['aid']} {res['name']} ({res['target']}) [Runtime: {runtime}]")
+        else:
+            print(f"[HATA] {res.get('error')}")
+            sys.exit(1)
+except Exception as e:
+    print(f"[HATA] İstek gönderilemedi: {e}")
+    sys.exit(1)
+PYEOF
+}
+
+cmd_remove_agent() {
+  local team="$1"
+  local target="$2"
+  if [ -z "$team" ] || [ -z "$target" ]; then
+    echo "Kullanım: team remove-agent <takım-adı> <@hedef|isim|id>"
+    exit 1
+  fi
+  ensure_server_running
+  python3 - "$team" "$target" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+team, target, api_url = sys.argv[1], sys.argv[2], sys.argv[3]
+req = urllib.request.Request(
+    f"{api_url}/api/team/remove-agent",
+    data=json.dumps({"team": team, "target": target}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req) as resp:
+        res = json.loads(resp.read().decode("utf-8"))
+        if res.get("success"):
+            print(f"[OK] {res.get('message')}")
+        else:
+            print(f"[HATA] {res.get('error')}")
+            sys.exit(1)
+except Exception as e:
+    print(f"[HATA] İstek başarısız: {e}")
+    sys.exit(1)
+PYEOF
+}
+
+cmd_dispatch() {
+  local team="$1"
+  local target="$2"
+  shift 2 || true
+  local msg="$*"
+  if [ -z "$team" ] || [ -z "$target" ] || [ -z "$msg" ]; then
+    echo "Kullanım: team dispatch <takım> <@hedef> <mesaj>"
+    exit 1
+  fi
+  ensure_server_running
+  python3 - "$team" "$target" "$msg" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+team, target, msg, api_url = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+req = urllib.request.Request(
+    f"{api_url}/api/dispatch",
+    data=json.dumps({"team": team, "target": target, "message": msg, "sender": "CLI"}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req) as resp:
+    res = json.loads(resp.read().decode("utf-8"))
+    if res.get("success"):
+        print(f"[OK] Mesaj {target} hedefine iletildi. ({res.get('message', '')})")
+    else:
+        print(f"[HATA] {res.get('error')}")
+        sys.exit(1)
+PYEOF
+}
+
+cmd_note() {
+  local team="$1"
+  local target="$2"
+  shift 2 || true
+  local note="$*"
+  if [ -z "$team" ] || [ -z "$target" ] || [ -z "$note" ]; then
+    echo "Kullanım: team note <takım> <@hedef> <not>"
+    exit 1
+  fi
+  ensure_server_running
+  python3 - "$team" "$target" "$note" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+team, target, note, api_url = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+req = urllib.request.Request(
+    f"{api_url}/api/note",
+    data=json.dumps({"team": team, "target": target, "note": note, "sender": "Tech Lead (CLI)"}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req) as resp:
+    res = json.loads(resp.read().decode("utf-8"))
+    if res.get("success"):
+        print(f"[OK] /btw notu {target} hedefine iletildi.")
+    else:
+        print(f"[HATA] {res.get('error')}")
+        sys.exit(1)
+PYEOF
+}
+
+cmd_logs() {
+  local team="$1"
+  local target="${2:-@lead}"
+  if [ -z "$team" ]; then
+    echo "Kullanım: team logs <takım-adı> [@hedef]"
+    exit 1
+  fi
+  python3 - "$team" "$target" << 'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+team_name, target = sys.argv[1], sys.argv[2]
+engine.sync_and_migrate()
+with engine.get_db() as conn:
+    if target in ("@lead", "lead"):
+        t = conn.execute("SELECT lead_cid FROM teams WHERE name=?", (team_name,)).fetchone()
+        cid = t["lead_cid"] if t else ""
+    else:
+        ag = conn.execute("SELECT cid FROM agents WHERE team_name=? AND target=?", (team_name, target)).fetchone()
+        cid = ag["cid"] if ag else ""
+
+snap = engine.read_brain_snapshot(cid, f"{team_name}:{target}")
+print(f"=== {team_name.upper()} {target} | Durum: {snap['status'].upper()} | Adım: #{snap['telemetry']['steps']} ===")
+if snap['thinking']:
+    print(f"\n[DÜŞÜNCE]\n{snap['thinking']}\n")
+if snap['tool_calls']:
+    print(f"[ARAÇLAR]\n" + "\n".join(f"• {tc['name']}: {tc['detail']}" for tc in snap['tool_calls']))
+print(f"\n[MARKDOWN ÇIKTI]\n{snap['markdown']}")
+PYEOF
+}
+
+cmd_tools() {
+  local subcmd="${1:-list}"
+  shift || true
+  if [ "$subcmd" = "list" ]; then
+    python3 - << 'PYEOF'
+import os, sys
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+eco = engine.discover_agy_ecosystem()
+print("=" * 90)
+print("ARAÇ VE SKILL MERKEZİ (TOOL & SKILL HUB)")
+print("=" * 90)
+print(f"{'ID':<25} {'TÜR':<14} {'AD':<25} {'AÇIKLAMA'}")
+print("-" * 90)
+for t in eco["tools"]:
+    print(f"{t['id']:<25} {t.get('category','tool'):<14} {t['name']:<25} {t.get('description','')[:30]}")
+print("-" * 90)
+print(f"Toplam {len(eco['skills'])} Antigravity Skill ve {len(eco['tools'])} hızlı araç hazır.")
+print("=" * 90)
+PYEOF
+  elif [ "$subcmd" = "run" ]; then
+    local team="$1"
+    local target="$2"
+    local tool_id="$3"
+    ensure_server_running
+    python3 - "$team" "$target" "$tool_id" "$API_URL" << 'PYEOF'
+import sys, json, urllib.request
+team, target, tool_id, api_url = sys.argv[1:5]
+req = urllib.request.Request(
+    f"{api_url}/api/tool/run",
+    data=json.dumps({"team": team, "target": target, "tool_id": tool_id}).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req) as resp:
+    res = json.loads(resp.read().decode("utf-8"))
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+PYEOF
+  fi
+}
+
+cmd_open() {
+  local target="$1"
+  local team="${2:-anikuro}"
+  if [ -z "$target" ]; then
+    echo "Kullanım: team open <@hedef> [takım-adı]"
+    exit 1
+  fi
+  python3 - "$team" "$target" << 'PYEOF'
+import os, sys, subprocess
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+team_name, target = sys.argv[1], sys.argv[2]
+engine.sync_and_migrate()
+with engine.get_db() as conn:
+    if target in ("@lead", "lead"):
+        row = conn.execute("SELECT lead_cid as cid, project_dir as workspace_dir, 'Tech Lead' as name, lead_runtime as runtime FROM teams WHERE name=?", (team_name,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM agents WHERE team_name=? AND (target=? OR target=?)", (team_name, target, f"@{target.lstrip('@')}")).fetchone()
+
+if not row:
+    print(f"[HATA] Ajan bulunamadı: {target}")
+    sys.exit(1)
+
+wdir = row["workspace_dir"] or os.getcwd()
+cid = row["cid"] or ""
+runtime = row["runtime"] if "runtime" in row.keys() and row["runtime"] else "agy"
+
+print(f"\033[1;32m>>> {row['name']} ({target}) interaktif terminal oturumu başlatılıyor...\033[0m")
+print(f"\033[36mDizin: {wdir} | Motor: {runtime} | CID: {cid or 'yeni'}\033[0m\n")
+
+if runtime == "claude":
+    cmd = ["claude", "--dangerously-skip-permissions"]
+    if cid: cmd.extend(["--resume", cid])
+elif runtime == "aider":
+    cmd = ["aider"]
+elif runtime == "ollama":
+    cmd = ["ollama", "run", row.get("model") or "llama3.2"]
+else:
+    cmd = ["agy", "--mode", "auto"]
+    if cid: cmd.extend(["-c", cid])
+
+subprocess.run(cmd, cwd=wdir)
+PYEOF
+}
+
+cmd_tmux() {
+  local team="${1:-anikuro}"
+  which tmux >/dev/null 2>&1 || { echo "[HATA] tmux kurulu değil! Lütfen 'sudo apt install tmux' çalıştırın."; exit 1; }
+  local sname="mission-${team}"
+  ensure_server_running
+
+  if tmux has-session -t "$sname" 2>/dev/null; then
+    echo "Mevcut Mission Control oturumuna bağlanılıyor: $sname"
+    tmux attach-session -t "$sname"
+    return
+  fi
+
+  echo "Yeni canlı Terminal Mission Control oluşturuluyor: $sname"
+  local my_bin="${BASH_SOURCE[0]}"
+  
+  tmux new-session -d -s "$sname" -n "cockpit" "$my_bin watch $team all"
+  tmux set -t "$sname" mouse on
+  tmux set -t "$sname" status-style "bg=#0d0f12,fg=#10b981"
+  tmux set -t "$sname" pane-border-style "fg=#27272a"
+  tmux set -t "$sname" pane-active-border-style "fg=#f59e0b"
+
+  python3 - "$team" "$sname" "$my_bin" << 'PYEOF'
+import os, sys, subprocess
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+team_name, sname, my_bin = sys.argv[1], sys.argv[2], sys.argv[3]
+with engine.get_db() as conn:
+    agents = conn.execute("SELECT target, name FROM agents WHERE team_name=? ORDER BY aid ASC", (team_name,)).fetchall()
+
+subprocess.run(["tmux", "new-window", "-t", sname, "-n", "lead", f"{my_bin} watch {team_name} @lead"])
+for ag in agents[:6]:
+    wname = ag["target"].lstrip("@")[:8]
+    subprocess.run(["tmux", "new-window", "-t", sname, "-n", wname, f"{my_bin} watch {team_name} {ag['target']}"])
+PYEOF
+
+  tmux select-window -t "$sname:cockpit"
+  tmux attach-session -t "$sname"
+}
+
+cmd_watch() {
+  local team="${1:-anikuro}"
+  local target="${2:-all}"
+  ensure_server_running
+
+  python3 - "$team" "$target" << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, os.environ.get("ENGINE_DIR", "."))
+import engine
+
+team_name, target = sys.argv[1], sys.argv[2]
+target = target.lower().lstrip("@")
+print(f"\033[1;36m=== AGY-VIBE CANLI AKIŞ: Takım={team_name.upper()}, Hedef=@{target} ===\033[0m")
+print("\033[90m(Çıkmak için Ctrl+C tuşlayın)\033[0m\n")
+
+last_seen = {}
+try:
+    while True:
+        with engine.get_db() as conn:
+            if target in ("all", "lead"):
+                t = conn.execute("SELECT lead_cid FROM teams WHERE name=?", (team_name,)).fetchone()
+                if t:
+                    snap = engine.read_brain_snapshot(t["lead_cid"] or "", f"{team_name}:@lead")
+                    sig = f"{snap['status']}|{snap['telemetry']['steps']}|{len(snap['markdown'])}"
+                    if last_seen.get("lead") != sig:
+                        last_seen["lead"] = sig
+                        print(f"\n\033[1;35m--- [TECH LEAD @lead • {snap['status'].upper()} • Adım #{snap['telemetry']['steps']}] ---\033[0m")
+                        if snap['thinking']:
+                            print(f"\033[33m🧠 Düşünce: {snap['thinking'][:200]}...\033[0m")
+                        print(snap['markdown'][-800:])
+
+            agents = conn.execute("SELECT * FROM agents WHERE team_name=? ORDER BY aid ASC", (team_name,)).fetchall()
+            for r in agents:
+                t_clean = r["target"].lower().lstrip("@")
+                if target in ("all", t_clean, str(r["aid"])):
+                    snap = engine.read_brain_snapshot(r["cid"] or "", f"{team_name}:{r['target']}")
+                    sig = f"{snap['status']}|{snap['telemetry']['steps']}|{len(snap['markdown'])}"
+                    if last_seen.get(r["target"]) != sig:
+                        last_seen[r["target"]] = sig
+                        st_color = "\033[32m" if snap['status'] == "idle" else "\033[33m"
+                        print(f"\n{st_color}=== [{r['name']} ({r['target']}) • {snap['status'].upper()} • Adım #{snap['telemetry']['steps']}] ===\033[0m")
+                        if snap['tool_calls']:
+                            tools_s = ", ".join(f"{tc['name']}({tc['detail']})" for tc in snap['tool_calls'][-3:])
+                            print(f"\033[36m⚡ Araçlar: {tools_s}\033[0m")
+                        if snap['thinking']:
+                            print(f"\033[33m🧠 Düşünce: {snap['thinking'][:180]}...\033[0m")
+                        print(snap['markdown'][-700:])
+        time.sleep(1.2)
+except KeyboardInterrupt:
+    print("\n\033[32mİzleme sonlandırıldı.\033[0m")
+PYEOF
+}
+
+cmd_ui() {
+  local name="${1:-anikuro}"
+  ensure_server_running
+  if command -v xdg-open >/dev/null 2>&1 && [ -n "$DISPLAY" ]; then
+    xdg-open "$API_URL" 2>/dev/null || true
+  fi
+  echo "=================================================================="
+  echo "🚀 AGY-VIBE Kokpiti Hazır: $API_URL"
+  echo "=================================================================="
+  cmd_agents "$name"
+}
+
+case "$1" in
+  ""|ui|cockpit|dashboard|start|restart)
+    shift || true
+    cmd_ui "$@"
+    ;;
+  list|ls)
+    cmd_list
+    ;;
+  agents|status)
+    shift || true
+    cmd_agents "$@"
+    ;;
+  create)
+    shift || true
+    cmd_create "$@"
+    ;;
+  add-agent|spawn-agent|new-agent)
+    shift || true
+    cmd_add_agent "$@"
+    ;;
+  remove-agent|rm-agent|kill-agent|delete-agent)
+    shift || true
+    cmd_remove_agent "$@"
+    ;;
+  dispatch|send)
+    shift || true
+    cmd_dispatch "$@"
+    ;;
+  note|btw)
+    shift || true
+    cmd_note "$@"
+    ;;
+  logs|log)
+    shift || true
+    cmd_logs "$@"
+    ;;
+  tools|tool)
+    shift || true
+    cmd_tools "$@"
+    ;;
+  open|jump)
+    shift || true
+    cmd_open "$@"
+    ;;
+  tmux|attach|attach-session|mission-control)
+    shift || true
+    cmd_tmux "$@"
+    ;;
+  watch|tail|follow|live)
+    shift || true
+    cmd_watch "$@"
+    ;;
+  setup|install)
+    bash "$ENGINE_DIR/install.sh"
+    ;;
+  restore|recover)
+    python3 "$ENGINE_DIR/engine.py"
+    ;;
+  help|--help|-h)
+    cmd_help
+    ;;
+  *)
+    if [ -d "$TEAMS_DIR/$1" ]; then
+      cmd_ui "$1"
+    else
+      echo "[BİLGİ] Bilinmeyen komut veya takım: $1"
+      cmd_help
+    fi
+    ;;
+esac

@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Agent Databases & Runtime State (re-created automatically in ~/.agy-teams)
+*.db
+*.sqlite3
+*.db-journal
+state.db
+
+# Logs & Temporary files
+*.log
+logs/
+.locks/
+tmp/
+
+# Local Environment & Secrets
+.env
+.env.local
+.venv/
+venv/
+ENV/
+
+# OS & Editor specific files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
