@@ -10,7 +10,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-emerald.svg" alt="License: MIT"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9%2B-blue.svg" alt="Python 3.9+"></a>
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL-black.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL%20%7C%20Windows-black.svg" alt="Platform">
   <img src="https://img.shields.io/badge/Architecture-Local--First%20%26%20Zero--Tmux-amber.svg" alt="Architecture">
 </p>
 
@@ -127,6 +127,23 @@ chmod +x install.sh
   - **macOS**: Configures a native `launchd` LaunchAgent (`com.hiveforge.orchestrator.plist`).
   - **WSL / Non-Systemd**: Provides standalone daemon support.
 - **Unified CLI Linking**: Symlinks `hive`, `team`, and `cortex` into `~/.local/bin/`.
+
+### 🪟 Native Windows Installation
+
+No WSL required. Requires [Git for Windows](https://git-scm.com/download/win) and Python 3.9+. Everything is handled by a single file, `hiveforge.bat`:
+
+```bat
+git clone https://github.com/ElCunq/HiveForge.git
+cd HiveForge
+hiveforge.bat
+```
+
+- The first run creates a local `.venv`, installs dependencies (`aiohttp`), adds the HiveForge folder to your user `PATH` and opens the cockpit. Double-clicking `hiveforge.bat` in File Explorer works too.
+- After that, in any new terminal: `hiveforge` (cockpit), `hiveforge help`, `hiveforge list`, `hiveforge dispatch <team> <@target> "..."`, `hiveforge watch <team>`, `hiveforge stop` — the same commands as `hive` / `team` on Linux.
+- npm-installed CLIs (`claude`, `codex`, ...) are resolved automatically; shell tools run through Git Bash when available.
+- `tmux` mode is not available on Windows — use `hiveforge watch <team> [target]` instead.
+- State lives in `%USERPROFILE%\.agy-teams`; if your profile folder is not writable it falls back to `%LOCALAPPDATA%\HiveForge` (or set `AGY_TEAMS_DIR`).
+- Uninstall: `hiveforge uninstall` (add `--purge` to also delete the saved database and configs).
 
 ---
 
