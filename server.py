@@ -22,7 +22,8 @@ import engine
 
 HOST = "127.0.0.1"
 PORT = 4444
-BASE_DIR = Path.home() / ".agy-teams"
+# Windows'ta kullanıcı profili yazılamıyorsa engine %LOCALAPPDATA%\HiveForge'a düşer; aynı dizini kullan
+BASE_DIR = engine.BASE_DIR if os.name == "nt" else Path.home() / ".agy-teams"
 TEAMS_DIR = BASE_DIR / "teams"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -473,7 +474,7 @@ async def api_create_team(request):
         return web.json_response({"success": False, "error": "Takım adı zorunludur"}, status=400)
 
     if not project_dir:
-        project_dir = str(Path.home() / "agy-teams" / name)
+        project_dir = str(engine.default_projects_root() / name)
     Path(project_dir).mkdir(parents=True, exist_ok=True)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -790,6 +791,13 @@ if __name__ == "__main__":
     port = PORT
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         port = int(sys.argv[1])
+    if os.name == "nt":
+        # Windows konsolu (cp1254/cp857) emoji ve Türkçe karakterlerde çökmesin
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     app = create_app()
     print("==================================================================")
     print(f"🚀 AGY-VIBE v3.0 (Zero-Tmux Native Brain JSONL + SQLite): http://{HOST}:{port}")
