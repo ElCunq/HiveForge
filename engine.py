@@ -22,8 +22,41 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 
+def _dir_is_writable(path: Path) -> bool:
+    """Klasörü oluşturabiliyor/yazabiliyor muyuz? (Windows'ta kısıtlı profil klasörleri için)"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".write-test-{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _windows_fallback_root() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "HiveForge"
+
+
+def _default_base_dir() -> Path:
+    if os.environ.get("AGY_TEAMS_DIR"):
+        return Path(os.environ["AGY_TEAMS_DIR"])
+    home_dir = Path.home() / ".agy-teams"
+    if os.name == "nt" and not _dir_is_writable(home_dir):
+        return _windows_fallback_root() / "agy-teams"
+    return home_dir
+
+
+def default_projects_root() -> Path:
+    """Takım proje dizini verilmediğinde kullanılacak kök (Linux/macOS: ~/agy-teams)."""
+    root = Path.home() / "agy-teams"
+    if os.name == "nt" and not _dir_is_writable(root):
+        return _windows_fallback_root() / "projects"
+    return root
+
+
 # Portable environment-based directories
-BASE_DIR = Path(os.environ.get("AGY_TEAMS_DIR", Path.home() / ".agy-teams"))
+BASE_DIR = _default_base_dir()
 TEAMS_DIR = BASE_DIR / "teams"
 DB_PATH = BASE_DIR / "state.db"
 BRAIN_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
@@ -35,6 +68,93 @@ TEAMS_DIR.mkdir(parents=True, exist_ok=True)
 # Active async subprocess tasks keyed by f"{team}:{target}"
 ACTIVE_PROCESSES: Dict[str, asyncio.subprocess.Process] = {}
 ACTIVE_TASKS_META: Dict[str, Dict[str, Any]] = {}
+
+
+# ----------------- Windows Compatibility Layer -----------------
+# Linux/macOS davranışı değişmez: aşağıdaki yardımcılar yalnızca os.name == "nt" iken devreye girer.
+
+IS_WINDOWS = os.name == "nt"
+
+
+def _windows_git_bash() -> Optional[str]:
+    """Git for Windows ile gelen bash.exe yolunu bulur (WSL'in System32\\bash.exe'sini atlar)."""
+    candidates = []
+    git_exe = shutil.which("git")
+    if git_exe:
+        git_root = Path(git_exe).resolve().parent.parent  # ...\Git\cmd\git.exe -> ...\Git
+        candidates += [git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"]
+    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
+            candidates.append(Path(base) / "Programs" / "Git" / "bin" / "bash.exe")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def _flatten_for_cmd(arg: str) -> str:
+    """cmd.exe satır sonlarında komutu keser; yeni satırları boşluğa çevirir."""
+    return " ".join(arg.splitlines())
+
+
+def resolve_cli_command(cmd: List[str]) -> List[str]:
+    """
+    Windows'ta npm ile kurulan CLI'lar (claude.cmd, codex.cmd ...) CreateProcess ile doğrudan
+    başlatılamaz. Bu fonksiyon:
+      1. .exe ise tam yolu kullanır,
+      2. npm .cmd shim'i ise içindeki node betiğini bulup `node <script>` olarak çalıştırır
+         (çok satırlı prompt'lar bozulmadan iletilir),
+      3. aksi halde cmd.exe /c üzerinden çalıştırır.
+    Linux/macOS'ta komutu olduğu gibi döndürür.
+    """
+    if not IS_WINDOWS or not cmd:
+        return cmd
+    exe = shutil.which(cmd[0])
+    if not exe:
+        return cmd
+    ext = Path(exe).suffix.lower()
+    if ext in (".exe", ".com"):
+        return [exe, *cmd[1:]]
+    if ext in (".cmd", ".bat"):
+        shim_dir = Path(exe).parent
+        try:
+            text = Path(exe).read_text(encoding="utf-8", errors="ignore")
+            for m in re.finditer(r'"%(?:~dp0|dp0)%\\?([^"%]+?\.(?:js|mjs|cjs|exe))"', text, re.IGNORECASE):
+                target = (shim_dir / m.group(1)).resolve()
+                if not target.exists():
+                    continue
+                if target.suffix.lower() == ".exe":
+                    return [str(target), *cmd[1:]]
+                node = shim_dir / "node.exe"
+                node_exe = str(node) if node.exists() else shutil.which("node")
+                if node_exe:
+                    return [node_exe, str(target), *cmd[1:]]
+        except Exception:
+            pass
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        return [comspec, "/d", "/s", "/c", exe, *[_flatten_for_cmd(a) for a in cmd[1:]]]
+    return [exe, *cmd[1:]]
+
+
+async def create_shell_subprocess(command: str, cwd: str) -> asyncio.subprocess.Process:
+    """Kabuk aracı çalıştırır. Windows'ta varsa Git Bash kullanılır (|, tail, head vb. çalışsın diye)."""
+    if IS_WINDOWS:
+        bash = _windows_git_bash()
+        if bash:
+            return await asyncio.create_subprocess_exec(
+                bash, "-lc", command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+    return await asyncio.create_subprocess_shell(
+        command,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
 
 def get_db() -> sqlite3.Connection:
@@ -265,7 +385,7 @@ def sync_and_migrate() -> None:
                     continue
                 cfg = parse_env_file(cfg_file)
                 tname = d.name
-                pdir = cfg.get("PROJECT_DIR", str(Path.home() / "agy-teams" / tname))
+                pdir = cfg.get("PROJECT_DIR", str(default_projects_root() / tname))
                 sess = cfg.get("SESSION_NAME", f"agy-{tname}")
                 lrole = cfg.get("LEAD_ROLE", "Tech Lead & Supervision")
                 lcid = cfg.get("LEAD_CONVERSATION_ID", "")
@@ -593,6 +713,8 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
 
 def find_interactive_tmux_pane(cid: str = "", target: str = "") -> Optional[str]:
     """Finds exact immutable pane_id in tmux by matching PID or target title."""
+    if IS_WINDOWS or not shutil.which("tmux"):
+        return None
     try:
         res = subprocess.run(
             ["tmux", "list-panes", "-a", "-F", "#{pane_id}|#{pane_pid}|#{pane_title}"],
@@ -770,6 +892,13 @@ async def execute_headless_agent_turn(
     else:
         # Custom runtime command template
         cmd = ["bash", "-c", f"{runtime} '{effective_prompt}'"]
+        if IS_WINDOWS:
+            git_bash = _windows_git_bash()
+            if git_bash:
+                cmd[0] = git_bash
+            else:
+                safe_prompt = _flatten_for_cmd(effective_prompt).replace('"', "'")
+                cmd = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", f'{runtime} "{safe_prompt}"']
 
     # Check CLI tool availability
     bin_name = cmd[0]
@@ -777,7 +906,7 @@ async def execute_headless_agent_turn(
         return False, cid, f"Hata: '{bin_name}' CLI komutu bu sistemde kurulu değil."
 
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
+        *resolve_cli_command(cmd),
         cwd=wdir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -866,11 +995,9 @@ async def dispatch_message(
                         if ag_row and ag_row["workspace_dir"]:
                             wdir = ag_row["workspace_dir"]
                     try:
-                        proc = await asyncio.create_subprocess_shell(
+                        proc = await create_shell_subprocess(
                             tool["command_or_prompt"],
                             cwd=wdir if Path(wdir).exists() else str(Path.home()),
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
                         )
                         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=20.0)
                         tool_out = (out_b.decode("utf-8", errors="ignore") + "\n" + err_b.decode("utf-8", errors="ignore")).strip()
@@ -1037,7 +1164,7 @@ def discover_agy_ecosystem() -> Dict[str, Any]:
 
     if shutil.which("agy"):
         try:
-            res = subprocess.run(["agy", "plugin", "list", "--json"], capture_output=True, text=True, check=False, timeout=5)
+            res = subprocess.run(resolve_cli_command(["agy", "plugin", "list", "--json"]), capture_output=True, text=True, check=False, timeout=5)
             if res.returncode == 0 and res.stdout.strip():
                 raw_plugins = json.loads(res.stdout)
                 for p in raw_plugins:
@@ -1055,7 +1182,7 @@ def discover_agy_ecosystem() -> Dict[str, Any]:
             pass
 
         try:
-            res_m = subprocess.run(["agy", "mcp", "list"], capture_output=True, text=True, check=False, timeout=5)
+            res_m = subprocess.run(resolve_cli_command(["agy", "mcp", "list"]), capture_output=True, text=True, check=False, timeout=5)
             if res_m.returncode == 0 and res_m.stdout.strip():
                 for line in res_m.stdout.strip().splitlines()[1:]:
                     parts = line.split(None, 3)
