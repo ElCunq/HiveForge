@@ -141,7 +141,8 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   hive stop                    # Arka plandaki HiveForge sunucusunu durdurur
   hive server                  # Sunucuyu bu pencerede (ön planda) çalıştırır
   team list                    # Kayıtlı tüm takımları listeler
-  team agents      [takım-adı] # Takımdaki ajanları, CLI motorlarını ve durumlarını listeler
+  team agents      [takım-adı] # Takımdaki ajanları, CLI motorlarını, bağlam ve token kullanımını listeler
+  team tokens      [takım-adı] # Token harcamalarını, kalan bağlamı ve ajan dökümünü gösterir
   team create      <takım> [proje-dizini] [--role "Rol"]
   team open        <@hedef> [takım]  # İlgili ajanın interaktif oturumuna girer
   team watch       [takım] [target]  # Canlı Markdown, Düşünce ve Araç akışını izler
@@ -168,6 +169,19 @@ def cmd_list(_args):
     print("=" * 110)
 
 
+def _fmt_tokens(n):
+    if n is None:
+        return "0"
+    n = float(n)
+    if abs(n) >= 1_000_000_000:
+        return f"{n/1_000_000_000:.1f}B"
+    if abs(n) >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if abs(n) >= 1_000:
+        return f"{n/1_000:.1f}k"
+    return str(int(n))
+
+
 def cmd_agents(args):
     engine = _engine()
     tname = args[0] if args else "anikuro"
@@ -180,12 +194,16 @@ def cmd_agents(args):
         lcid = team["lead_cid"] or ""
         lruntime = team["lead_runtime"] if "lead_runtime" in team.keys() and team["lead_runtime"] else "agy"
         lsnap = engine.read_brain_snapshot(lcid, f"{tname}:@lead")
-        print("=" * 125)
+        ltel = lsnap.get("telemetry", {})
+        lctx = f"{_fmt_tokens(ltel.get('context_tokens', 0))} ({_fmt_tokens(ltel.get('remaining_tokens', 0))} boş)"
+        lcum = _fmt_tokens(ltel.get("cum_total_tokens", 0))
+
+        print("=" * 135)
         print(f"TAKIM: {tname.upper()} | Proje Dizini: {team['project_dir']}")
-        print(f"TECH LEAD (@lead) | CLI: {lruntime.upper():<7} | CID: {lcid[:8] if lcid else 'new':<8} | Durum: {lsnap['status'].upper():<8} | Rol: {team['lead_role']}")
-        print("-" * 125)
-        print(f"{'ID':<4} {'HEDEF':<10} {'CLI':<8} {'AJAN ADI':<24} {'DURUM':<9} {'CID':<10} {'ARAÇ & SKILL':<22} {'ROL'}")
-        print("-" * 125)
+        print(f"TECH LEAD (@lead) | CLI: {lruntime.upper():<7} | CID: {lcid[:8] if lcid else 'new':<8} | Durum: {lsnap['status'].upper():<8} | Bağlam: {lctx} | Harcanan: {lcum}")
+        print("-" * 135)
+        print(f"{'ID':<4} {'HEDEF':<10} {'CLI':<8} {'AJAN ADI':<22} {'DURUM':<9} {'BAĞLAM / KALAN':<19} {'HARCANAN':<11} {'ARAÇ & SKILL'}")
+        print("-" * 135)
         for r in conn.execute("SELECT * FROM agents WHERE team_name=? ORDER BY aid ASC", (tname,)).fetchall():
             cid = r["cid"] or ""
             rt = r["runtime"] if "runtime" in r.keys() and r["runtime"] else "agy"
@@ -193,8 +211,43 @@ def cmd_agents(args):
             tools = json.loads(r["tools_json"] or "[]")
             skills = json.loads(r["skills_json"] or "[]")
             badge = f"{len(tools)} araç, {len(skills)} skill"
-            print(f"#{r['aid']:<3} {r['target']:<10} {rt.upper():<8} {r['name'][:23]:<24} {snap['status'].upper():<9} {(cid[:8] if cid else 'new'):<10} {badge:<22} {r['role'][:30]}")
-        print("=" * 125)
+            tel = snap.get("telemetry", {})
+            ctx = f"{_fmt_tokens(tel.get('context_tokens', 0))} ({_fmt_tokens(tel.get('remaining_tokens', 0))} boş)"
+            cum = _fmt_tokens(tel.get("cum_total_tokens", 0))
+            print(f"#{r['aid']:<3} {r['target']:<10} {rt.upper():<8} {r['name'][:21]:<22} {snap['status'].upper():<9} {ctx:<19} {cum:<11} {badge}")
+        print("=" * 135)
+    return 0
+
+
+def cmd_tokens(args):
+    engine = _engine()
+    tname = args[0] if args else "anikuro"
+    engine.sync_and_migrate()
+    analytics = engine.get_team_token_analytics(tname)
+    if "error" in analytics:
+        print(f"[HATA] {analytics['error']}")
+        return 1
+
+    print("=" * 115)
+    print(f"HIVEFORGE TOKEN TELEMETRİSİ & KAYNAK YÖNETİMİ — TAKIM: {tname.upper()}")
+    print("=" * 115)
+    print(f"  Toplam Harcanan:   {_fmt_tokens(analytics['total_tokens']):<10} (Giriş: {_fmt_tokens(analytics['total_input_tokens'])}, Çıkış: {_fmt_tokens(analytics['total_output_tokens'])})")
+    print(f"  Aktif Bağlam:      {_fmt_tokens(analytics['total_context_tokens'])} / {_fmt_tokens(analytics['total_context_limit'])} (%{analytics['total_context_pct']} Doluluk)")
+    print(f"  Kalan Kapasite:    {_fmt_tokens(analytics['total_remaining_tokens']):<10} (Tüm ajanların serbest bağlam toplamı)")
+    print(f"  Önbellek İsabeti:  %{analytics['cache_hit_pct']} (Tasarruf edilen: {_fmt_tokens(analytics['total_cache_tokens'])})")
+    top = analytics.get("top_consumer")
+    if top:
+        print(f"  En Yüksek Tüketim: {top['target']} ({top['name']}) -> {_fmt_tokens(top['cum_total_tokens'])} (%{top['pct_of_team_tokens']})")
+    print("-" * 115)
+    print(f"{'HEDEF':<9} {'CLI':<8} {'AJAN ADI':<22} {'AKTİF BAĞLAM':<20} {'KALAN KAPASİTE':<16} {'KÜMÜLATİF':<14} {'PAY'}")
+    print("-" * 115)
+    for ag in analytics.get("agents", []):
+        ctx_str = f"{_fmt_tokens(ag['context_tokens'])} / {_fmt_tokens(ag['context_limit'])} (%{ag['context_pct']})"
+        rem_str = _fmt_tokens(ag['remaining_tokens'])
+        cum_str = _fmt_tokens(ag['cum_total_tokens'])
+        pay_str = f"%{ag['pct_of_team_tokens']}"
+        print(f"{ag['target']:<9} {ag['runtime'].upper():<8} {ag['name'][:21]:<22} {ctx_str:<20} {rem_str:<16} {cum_str:<14} {pay_str}")
+    print("=" * 115)
     return 0
 
 
@@ -466,6 +519,7 @@ COMMANDS = {
     **dict.fromkeys(["", "ui", "cockpit", "dashboard", "start", "restart"], cmd_ui),
     **dict.fromkeys(["list", "ls"], cmd_list),
     **dict.fromkeys(["agents", "status"], cmd_agents),
+    **dict.fromkeys(["tokens", "token", "usage", "stats"], cmd_tokens),
     "create": cmd_create,
     **dict.fromkeys(["add-agent", "spawn-agent", "new-agent"], cmd_add_agent),
     **dict.fromkeys(["remove-agent", "rm-agent", "kill-agent", "delete-agent"], cmd_remove_agent),
