@@ -254,6 +254,15 @@ def init_db() -> None:
         if "lead_runtime" not in team_cols:
             cursor.execute("ALTER TABLE teams ADD COLUMN lead_runtime TEXT DEFAULT 'agy';")
 
+        cursor.execute("PRAGMA table_info(agent_turns);")
+        turn_cols = [c[1] for c in cursor.fetchall()]
+        if "input_tokens" not in turn_cols:
+            cursor.execute("ALTER TABLE agent_turns ADD COLUMN input_tokens INTEGER DEFAULT 0;")
+        if "output_tokens" not in turn_cols:
+            cursor.execute("ALTER TABLE agent_turns ADD COLUMN output_tokens INTEGER DEFAULT 0;")
+        if "total_tokens" not in turn_cols:
+            cursor.execute("ALTER TABLE agent_turns ADD COLUMN total_tokens INTEGER DEFAULT 0;")
+
         seed_builtin_tools(conn)
 
 
@@ -542,22 +551,57 @@ def summarize_tool_call(tc: Dict[str, Any]) -> Dict[str, str]:
     return {"name": name, "detail": detail}
 
 
-def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team_name: str = "", target: str = "") -> Dict[str, Any]:
+def get_runtime_context_limit(runtime: str = "agy", model: str = "") -> int:
+    """Returns the model context window limit in tokens based on runtime/model."""
+    m = (model or "").lower()
+    r = (runtime or "agy").lower().strip()
+    if "claude" in m or r == "claude":
+        return 200_000
+    if "codex" in m or "gpt-4" in m or "o1" in m or "o3" in m or r == "codex":
+        return 128_000
+    if "gemini" in m or r == "agy":
+        return 1_000_000
+    if "llama" in m or "qwen" in m:
+        return 131_072
+    if "deepseek" in m:
+        return 64_000
+    if r == "ollama":
+        return 32_768
+    return 128_000
+
+
+def read_brain_snapshot(
+    cid: str,
+    task_key: str = "",
+    runtime: str = "agy",
+    team_name: str = "",
+    target: str = "",
+    model: str = "",
+) -> Dict[str, Any]:
     """
     Unified reader:
     - If runtime == 'agy': reads directly from ~/.gemini/antigravity-cli/brain/<cid>/transcript_full.jsonl
     - If runtime != 'agy': reads recent agent_turns from SQLite
+    Extracts live context tokens, model context limit, remaining capacity, and cumulative expenditure.
     """
     is_subproc_running = task_key in ACTIVE_PROCESSES and ACTIVE_PROCESSES[task_key].returncode is None
+    if task_key and ":" in task_key:
+        parts = task_key.split(":", 1)
+        if not team_name:
+            team_name = parts[0]
+        if not target:
+            target = parts[1]
 
-    # NON-AGY RUNTIMES (Claude, Aider, Ollama, Custom)
+    context_limit = get_runtime_context_limit(runtime, model)
+
+    # NON-AGY RUNTIMES (Claude, Codex, Aider, Ollama, Custom)
     if runtime != "agy":
         with get_db() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM agent_turns
                 WHERE team_name = ? AND target = ?
-                ORDER BY id DESC LIMIT 5
+                ORDER BY id DESC LIMIT 50
                 """,
                 (team_name, target),
             ).fetchall()
@@ -569,14 +613,30 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
                 "terminal": f"Runtime: {runtime}\nWaiting for turn execution...",
                 "thinking": "",
                 "tool_calls": [],
-                "telemetry": {"steps": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
+                "telemetry": {
+                    "steps": 0,
+                    "input_tokens": 0,
+                    "cache_tokens": 0,
+                    "output_tokens": 0,
+                    "context_tokens": 0,
+                    "context_limit": context_limit,
+                    "remaining_tokens": context_limit,
+                    "context_pct": 0.0,
+                    "cum_input_tokens": 0,
+                    "cum_cache_tokens": 0,
+                    "cum_output_tokens": 0,
+                    "cum_total_tokens": 0,
+                },
             }
 
         md_sections = []
         term_logs = []
         latest_thinking = ""
         recent_tools = []
-        for r in reversed(rows):
+        cum_in = 0
+        cum_out = 0
+
+        for r in reversed(rows[:5]):
             md_sections.append(f"> **🎯 Görev:** {r['user_prompt'][:160]}\n\n{r['response_md']}")
             if r["thinking"]:
                 latest_thinking = r["thinking"]
@@ -588,13 +648,39 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
                 except Exception:
                     pass
 
+        for r in rows:
+            in_t = r["input_tokens"] if ("input_tokens" in r.keys() and r["input_tokens"]) else max(1, len(r["user_prompt"]) // 4)
+            out_t = r["output_tokens"] if ("output_tokens" in r.keys() and r["output_tokens"]) else max(1, len(r["response_md"]) // 4)
+            cum_in += in_t
+            cum_out += out_t
+
+        last_r = rows[0] if rows else None
+        last_in = (last_r["input_tokens"] if ("input_tokens" in last_r.keys() and last_r["input_tokens"]) else max(1, len(last_r["user_prompt"]) // 4)) if last_r else 0
+        last_out = (last_r["output_tokens"] if ("output_tokens" in last_r.keys() and last_r["output_tokens"]) else max(1, len(last_r["response_md"]) // 4)) if last_r else 0
+        context_tokens = last_in + last_out
+        remaining_tokens = max(0, context_limit - context_tokens)
+        context_pct = round((context_tokens / context_limit) * 100, 1) if context_limit > 0 else 0.0
+
         return {
             "status": "working" if is_subproc_running else "idle",
             "markdown": "\n\n---\n\n".join(md_sections[-3:]),
             "terminal": "\n\n".join(term_logs[-4:]) if term_logs else f"Runtime: {runtime}",
             "thinking": latest_thinking[-1200:] if latest_thinking else "",
             "tool_calls": recent_tools[-6:],
-            "telemetry": {"steps": len(rows), "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
+            "telemetry": {
+                "steps": len(rows),
+                "input_tokens": last_in,
+                "cache_tokens": 0,
+                "output_tokens": last_out,
+                "context_tokens": context_tokens,
+                "context_limit": context_limit,
+                "remaining_tokens": remaining_tokens,
+                "context_pct": context_pct,
+                "cum_input_tokens": cum_in,
+                "cum_cache_tokens": 0,
+                "cum_output_tokens": cum_out,
+                "cum_total_tokens": cum_in + cum_out,
+            },
         }
 
     # AGY RUNTIME
@@ -607,13 +693,46 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
             "terminal": "Waiting for task execution...",
             "thinking": "",
             "tool_calls": [],
-            "telemetry": {"steps": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
+            "telemetry": {
+                "steps": 0,
+                "input_tokens": 0,
+                "cache_tokens": 0,
+                "output_tokens": 0,
+                "context_tokens": 0,
+                "context_limit": context_limit,
+                "remaining_tokens": context_limit,
+                "context_pct": 0.0,
+                "cum_input_tokens": 0,
+                "cum_cache_tokens": 0,
+                "cum_output_tokens": 0,
+                "cum_total_tokens": 0,
+            },
         }
 
     log_dir = BRAIN_DIR / cid / ".system_generated" / "logs"
     full_file = log_dir / "transcript_full.jsonl"
     compact_file = log_dir / "transcript.jsonl"
     target_file = full_file if full_file.exists() else compact_file
+    token_file = compact_file if compact_file.exists() else target_file
+
+    # Fast cumulative token sweep from compact transcript
+    cum_in = 0
+    cum_cache = 0
+    cum_out = 0
+    if token_file and token_file.exists():
+        try:
+            with open(token_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if '"input_tokens"' in line:
+                        try:
+                            d = json.loads(line)
+                            cum_in += d.get("input_tokens", 0)
+                            cum_cache += d.get("cache_read_tokens", 0)
+                            cum_out += d.get("output_tokens", 0)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     steps = read_tail_jsonl(target_file, max_bytes=650_000, max_steps=140)
     if not steps:
@@ -623,7 +742,20 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
             "terminal": f"Brain CID: {cid}\nNo steps recorded yet.",
             "thinking": "",
             "tool_calls": [],
-            "telemetry": {"steps": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0},
+            "telemetry": {
+                "steps": 0,
+                "input_tokens": 0,
+                "cache_tokens": 0,
+                "output_tokens": 0,
+                "context_tokens": 0,
+                "context_limit": context_limit,
+                "remaining_tokens": context_limit,
+                "context_pct": 0.0,
+                "cum_input_tokens": cum_in,
+                "cum_cache_tokens": cum_cache,
+                "cum_output_tokens": cum_out,
+                "cum_total_tokens": cum_in + cum_cache + cum_out,
+            },
         }
 
     last_step = steps[-1]
@@ -699,6 +831,26 @@ def read_brain_snapshot(cid: str, task_key: str = "", runtime: str = "agy", team
     display_md = "\n\n---\n\n".join(md_sections[-4:]) if md_sections else "*Ajan araç çalıştırıyor...*"
     display_term = "\n\n".join(term_logs[-6:]) if term_logs else "Henüz terminal / araç çıktısı yok."
 
+    last_in = telemetry.get("input_tokens", 0)
+    last_cache = telemetry.get("cache_tokens", 0)
+    last_out = telemetry.get("output_tokens", 0)
+    context_tokens = last_in + last_cache + last_out
+    remaining_tokens = max(0, context_limit - context_tokens)
+    context_pct = round((context_tokens / context_limit) * 100, 1) if context_limit > 0 else 0.0
+
+    cum_total = cum_in + cum_cache + cum_out
+    if cum_total == 0 and context_tokens > 0:
+        cum_in, cum_cache, cum_out, cum_total = last_in, last_cache, last_out, context_tokens
+
+    telemetry["context_tokens"] = context_tokens
+    telemetry["context_limit"] = context_limit
+    telemetry["remaining_tokens"] = remaining_tokens
+    telemetry["context_pct"] = context_pct
+    telemetry["cum_input_tokens"] = cum_in
+    telemetry["cum_cache_tokens"] = cum_cache
+    telemetry["cum_output_tokens"] = cum_out
+    telemetry["cum_total_tokens"] = cum_total
+
     return {
         "status": status,
         "markdown": display_md,
@@ -751,10 +903,17 @@ def find_interactive_tmux_pane(cid: str = "", target: str = "") -> Optional[str]
     return None
 
 
-def sync_team_orchestration_doc(team_name: str, project_dir: str):
+def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
     """Generates and syncs TEAM_ORCHESTRATION.md in the project directory so all agents know the team, roles, and rules."""
-    pdir = Path(project_dir) if project_dir else None
-    if not pdir or not pdir.exists():
+    pdir = None
+    if project_dir and Path(project_dir).exists():
+        pdir = Path(project_dir)
+    else:
+        with get_db() as conn:
+            t = conn.execute("SELECT project_dir FROM teams WHERE name = ?", (team_name,)).fetchone()
+            if t and t["project_dir"] and Path(t["project_dir"]).exists():
+                pdir = Path(t["project_dir"])
+    if not pdir:
         return
 
     with get_db() as conn:
@@ -789,6 +948,128 @@ def sync_team_orchestration_doc(team_name: str, project_dir: str):
         (pdir / "AGENTS.md").write_text("\n".join(doc_lines), encoding="utf-8")
     except Exception:
         pass
+
+
+def get_team_token_analytics(team_name: str) -> Dict[str, Any]:
+    """
+    Computes comprehensive token analytics for the entire team:
+    - Total tokens spent (cumulative)
+    - Total active context tokens & remaining capacity
+    - Per-agent breakdown with share percentage and visual gauge metrics
+    - Top token consumer identification
+    """
+    sync_and_migrate()
+    with get_db() as conn:
+        team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
+        if not team:
+            return {"success": False, "error": f"Takım bulunamadı: {team_name}"}
+        lead_cid = team["lead_cid"] or ""
+        lead_runtime = team["lead_runtime"] if ("lead_runtime" in team.keys() and team["lead_runtime"]) else "agy"
+        agents_rows = conn.execute("SELECT * FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)).fetchall()
+
+    members = []
+
+    # 1. Tech Lead
+    lead_snap = read_brain_snapshot(lead_cid, task_key=f"{team_name}:@lead", runtime=lead_runtime)
+    lead_tel = lead_snap.get("telemetry", {})
+    members.append({
+        "target": "@lead",
+        "name": f"{team_name.title()} Tech Lead",
+        "role": team["lead_role"],
+        "runtime": lead_runtime,
+        "model": "",
+        "is_lead": True,
+        "cid": lead_cid[:8] if lead_cid else "lead",
+        "full_cid": lead_cid,
+        "telemetry": lead_tel,
+    })
+
+    # 2. Worker Agents
+    for r in agents_rows:
+        cid = r["cid"] or ""
+        r_runtime = r["runtime"] if ("runtime" in r.keys() and r["runtime"]) else "agy"
+        r_model = r["model"] if ("model" in r.keys() and r["model"]) else ""
+        snap = read_brain_snapshot(cid, task_key=f"{team_name}:{r['target']}", runtime=r_runtime, model=r_model)
+        tel = snap.get("telemetry", {})
+        members.append({
+            "target": r["target"],
+            "name": r["name"],
+            "role": r["role"],
+            "runtime": r_runtime,
+            "model": r_model,
+            "is_lead": False,
+            "cid": cid[:8] if cid else "new",
+            "full_cid": cid,
+            "telemetry": tel,
+        })
+
+    # Aggregations
+    total_cum_tokens = sum(m["telemetry"].get("cum_total_tokens", 0) for m in members)
+    total_context_tokens = sum(m["telemetry"].get("context_tokens", 0) for m in members)
+    total_context_limit = sum(m["telemetry"].get("context_limit", 1_000_000) for m in members)
+    total_remaining_tokens = max(0, total_context_limit - total_context_tokens)
+    total_context_pct = round((total_context_tokens / total_context_limit) * 100, 1) if total_context_limit > 0 else 0.0
+    total_input_tokens = sum(m["telemetry"].get("cum_input_tokens", 0) for m in members)
+    total_cache_tokens = sum(m["telemetry"].get("cum_cache_tokens", 0) for m in members)
+    total_output_tokens = sum(m["telemetry"].get("cum_output_tokens", 0) for m in members)
+
+    # Fallback if cumulative sum is 0 but context has values
+    if total_cum_tokens == 0 and total_context_tokens > 0:
+        total_cum_tokens = total_context_tokens
+
+    # Compute individual shares and sort
+    for m in members:
+        tel = m["telemetry"]
+        m_cum = tel.get("cum_total_tokens", 0)
+        if m_cum == 0 and tel.get("context_tokens", 0) > 0:
+            m_cum = tel.get("context_tokens", 0)
+        m["cum_tokens"] = m_cum
+        m["cum_total_tokens"] = m_cum
+        m["cum_input_tokens"] = tel.get("cum_input_tokens", 0)
+        m["cum_cache_tokens"] = tel.get("cum_cache_tokens", 0)
+        m["cum_output_tokens"] = tel.get("cum_output_tokens", 0)
+        m["context_tokens"] = tel.get("context_tokens", 0)
+        m["context_limit"] = tel.get("context_limit", 1_000_000)
+        m["remaining_tokens"] = tel.get("remaining_tokens", m["context_limit"])
+        m["context_pct"] = tel.get("context_pct", 0.0)
+        m["share_pct"] = round((m_cum / total_cum_tokens) * 100, 1) if total_cum_tokens > 0 else 0.0
+        m["pct_of_team_tokens"] = m["share_pct"]
+        m["steps"] = tel.get("steps", 0)
+
+    sorted_members = sorted(members, key=lambda x: (x["cum_tokens"], x["context_tokens"]), reverse=True)
+    top_consumer = None
+    if sorted_members and sorted_members[0]["cum_tokens"] > 0:
+        top = sorted_members[0]
+        top_consumer = {
+            "target": top["target"],
+            "name": top["name"],
+            "runtime": top["runtime"],
+            "tokens": top["cum_tokens"],
+            "cum_total_tokens": top["cum_tokens"],
+            "share_pct": top["share_pct"],
+            "pct_of_team_tokens": top["share_pct"],
+        }
+
+    cache_hit_pct = 0.0
+    if (total_input_tokens + total_cache_tokens) > 0:
+        cache_hit_pct = round((total_cache_tokens / (total_input_tokens + total_cache_tokens)) * 100, 1)
+
+    return {
+        "success": True,
+        "team": team_name,
+        "total_tokens": total_cum_tokens,
+        "total_cum_tokens": total_cum_tokens,
+        "total_context_tokens": total_context_tokens,
+        "total_context_limit": total_context_limit,
+        "total_remaining_tokens": total_remaining_tokens,
+        "total_context_pct": total_context_pct,
+        "total_input_tokens": total_input_tokens,
+        "total_cache_tokens": total_cache_tokens,
+        "total_output_tokens": total_output_tokens,
+        "cache_hit_pct": cache_hit_pct,
+        "top_consumer": top_consumer,
+        "agents": sorted_members,
+    }
 
 
 def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: str) -> str:
@@ -950,14 +1231,16 @@ async def execute_headless_agent_turn(
         # For non-agy runtimes: store turn in SQLite agent_turns table
         if runtime != "agy":
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            est_in = max(1, len(prompt) // 4)
+            est_out = max(1, len(stdout) // 4)
             with get_db() as conn:
                 conn.execute(
                     """
                     INSERT INTO agent_turns
-                    (team_name, target, runtime, user_prompt, response_md, command_logs, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (team_name, target, runtime, user_prompt, response_md, command_logs, status, created_at, input_tokens, output_tokens, total_tokens)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (team_name, target, runtime, prompt, stdout or "*Çıktı üretilmedi*", stderr, "DONE" if ok else "ERROR", now),
+                    (team_name, target, runtime, prompt, stdout or "*Çıktı üretilmedi*", stderr, "DONE" if ok else "ERROR", now, est_in, est_out, est_in + est_out),
                 )
     finally:
         ACTIVE_PROCESSES.pop(task_key, None)
