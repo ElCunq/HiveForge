@@ -243,6 +243,7 @@ async def api_get_team_info(request):
     locks = scan_team_locks(team_name, project_dir)
     tasks = extract_kanban_tasks(project_dir, team_name)
     brain_sections = extract_project_brain(project_dir, team_name)
+    tokens = engine.get_team_token_analytics(team_name)
 
     return web.json_response({
         "success": True,
@@ -255,7 +256,14 @@ async def api_get_team_info(request):
         "locks": locks,
         "tasks": tasks,
         "brain": brain_sections,
+        "tokens": tokens,
     })
+
+
+async def api_get_team_tokens(request):
+    team_name = request.match_info.get("name")
+    data = engine.get_team_token_analytics(team_name)
+    return web.json_response(data)
 
 
 async def api_get_ecosystem(request):
@@ -331,7 +339,7 @@ async def api_configure_agent(request):
             ),
         )
         engine.export_agents_json(conn, team)
-        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
+    engine.sync_team_orchestration_doc(team)
 
     return web.json_response({"success": True, "message": f"{name} ({target}) yapılandırması kaydedildi."})
 
@@ -596,7 +604,7 @@ async def api_add_agent(request):
             ),
         )
         engine.export_agents_json(conn, team)
-        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
+    engine.sync_team_orchestration_doc(team)
 
     return web.json_response({
         "success": True,
@@ -642,7 +650,7 @@ async def api_remove_agent(request):
         for idx, rem in enumerate(remaining):
             conn.execute("UPDATE agents SET aid = ?, pane = ? WHERE id = ?", (idx + 1, idx, rem["id"]))
         engine.export_agents_json(conn, team)
-        engine.sync_team_orchestration_doc(team, t_row["project_dir"])
+    engine.sync_team_orchestration_doc(team)
 
     return web.json_response({"success": True, "removed": found["name"], "target": found["target"]})
 
@@ -705,9 +713,16 @@ async def websocket_handler(request):
                 cid = ag["full_cid"]
                 card_id = ag["id"]
                 task_key = f"{team_name}:{ag['target']}"
-                snap = engine.read_brain_snapshot(cid, task_key=task_key)
+                snap = engine.read_brain_snapshot(
+                    cid,
+                    task_key=task_key,
+                    runtime=ag.get("runtime", "agy"),
+                    team_name=team_name,
+                    target=ag["target"],
+                    model=ag.get("model", ""),
+                )
 
-                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}"
+                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens',0)}|{snap['telemetry'].get('cum_total_tokens',0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}"
                 if last_hashes.get(card_id) != state_sig:
                     last_hashes[card_id] = state_sig
                     await ws.send_json({
@@ -734,8 +749,14 @@ async def websocket_handler(request):
                     })
 
             # Lead Snapshot from Brain JSONL
-            lead_snap = engine.read_brain_snapshot(lead_cid, task_key=f"{team_name}:@lead")
-            lead_sig = f"{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}"
+            lead_snap = engine.read_brain_snapshot(
+                lead_cid,
+                task_key=f"{team_name}:@lead",
+                runtime=team["lead_runtime"] or "agy",
+                team_name=team_name,
+                target="@lead",
+            )
+            lead_sig = f"{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens',0)}|{lead_snap['telemetry'].get('cum_total_tokens',0)}"
             if last_hashes.get("lead") != lead_sig:
                 last_hashes["lead"] = lead_sig
                 await ws.send_json({
@@ -748,6 +769,16 @@ async def websocket_handler(request):
                     "thinking": lead_snap["thinking"],
                     "tool_calls": lead_snap["tool_calls"],
                     "telemetry": lead_snap["telemetry"],
+                })
+
+            # Team-wide live token analytics snapshot
+            tok_analytics = engine.get_team_token_analytics(team_name)
+            tok_sig = f"{tok_analytics['total_cum_tokens']}|{tok_analytics['total_context_tokens']}"
+            if last_hashes.get("tokens") != tok_sig:
+                last_hashes["tokens"] = tok_sig
+                await ws.send_json({
+                    "type": "tokens_snapshot",
+                    "tokens": tok_analytics,
                 })
 
             await asyncio.sleep(1.0)
@@ -772,6 +803,7 @@ def create_app():
     app.router.add_get("/api/team/{name}/locks", api_get_locks)
     app.router.add_get("/api/team/{name}/tasks", api_get_tasks)
     app.router.add_get("/api/team/{name}/brain", api_get_brain)
+    app.router.add_get("/api/team/{name}/tokens", api_get_team_tokens)
     app.router.add_post("/api/agent/configure", api_configure_agent)
     app.router.add_post("/api/agent/run-tool", api_run_tool)
     app.router.add_post("/api/tools/create", api_create_tool)

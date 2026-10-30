@@ -41,6 +41,8 @@
    - Non-blocking out-of-band communication between agents and tech leads (`/btw @target [note]`) that prevents context deadlocks.
 5. **Conflict & File Locking Barrier**:
    - Real-time monitoring and visual indicators for file locks (`.locks/locks.json`) across submodules.
+6. **Token Telemetry & Context Window Gauge**:
+   - Live token expenditure tracking, cache hit efficiency analysis, remaining context window capacity gauges, and per-agent token consumption breakdown both in the Web Cockpit and in the Terminal CLI.
 
 ---
 
@@ -160,22 +162,33 @@ Opens the web cockpit in your default browser and displays the live status dashb
 ```bash
 hive agents [team-name]
 ```
-Outputs an organized terminal table showing agent targets (`@tag`), CLI runtimes (`AGY`, `CLAUDE`, `CODEX`, etc.), statuses (`IDLE`, `WORKING`), conversation IDs, and bound tools.
+Outputs an organized terminal table showing agent targets (`@tag`), CLI runtimes (`AGY`, `CLAUDE`, `CODEX`, etc.), statuses (`IDLE`, `WORKING`), active context window usage, remaining capacity, and cumulative token expenditure.
 
-### 3. Terminal Hacker Mode (Tmux Mission Control)
+### 3. Track Token Usage & Context Capacity
+```bash
+hive tokens [team-name]
+```
+Displays comprehensive real-time token telemetry:
+- **Total Spent Tokens**: Cumulative input, cache, and output tokens.
+- **Context Window Capacity**: Active context tokens vs. runtime context limit (e.g. 1M for Gemini/AGY, 200k for Claude, 128k for Codex).
+- **Remaining Tokens**: Available context buffer before hitting saturation.
+- **Cache Hit Efficiency**: Percentage and tokens saved via prompt caching.
+- **Per-Agent Breakdown Table**: Sorted list showing individual agent consumption, percentage of team budget, and active context load.
+
+### 4. Terminal Hacker Mode (Tmux Mission Control)
 ```bash
 hive tmux [team-name]
 ```
 Launches an interactive, mouse-enabled tmux session with a dedicated window per agent, synchronized with the orchestrator.
 
-### 4. Direct Interactive Jump-In
+### 5. Direct Interactive Jump-In
 Need to manually take over an agent in full-screen terminal mode?
 ```bash
 hive open @backend
 ```
 Instantly launches the agent's interactive CLI (resuming its exact conversation context and working directory).
 
-### 5. Send Tasks & Asynchronous Notes
+### 6. Send Tasks & Asynchronous Notes
 ```bash
 # Direct task assignment:
 hive dispatch anikuro @backend "Implement JWT rotation in auth middleware."
@@ -184,7 +197,7 @@ hive dispatch anikuro @backend "Implement JWT rotation in auth middleware."
 hive note anikuro @backend "/btw reminder: use Argon2id for password hashes"
 ```
 
-### 6. Live Stream Telemetry
+### 7. Live Stream Telemetry
 ```bash
 hive watch [team-name] [target]
 ```
