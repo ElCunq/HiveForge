@@ -203,13 +203,42 @@ hive watch [team-name] [target]
 ```
 Streams thoughts, tool calls, and markdown outputs in high-contrast color.
 
+### 8. Task Ledger, Review & Deploy Gate
+```bash
+team tasks anikuro                      # open tasks: status, owner, token cost
+team review anikuro 42 onay             # approve a finished task
+team review anikuro 42 ret "fix the mobile layout"   # reject -> sent back to the agent as a new task
+team deploy anikuro --tasks 42,43 -- caprover deploy -a anikuro-api   # lead only, one deploy at a time
+team deploys anikuro                    # deploy history
+```
+Every finished task is pushed back to the agent that dispatched it (no polling). Inside agent processes `caprover`
+only runs through `team deploy`.
+
+### 9. Inbox, File Locks & Budget
+```bash
+team ask-user anikuro "Deploy api + web now?"   # question in the UI inbox; the answer goes back to the agent
+team tell-user anikuro "Sprint 19 done"         # notice + browser notification
+team lock anikuro src/api/stream.rs             # released automatically when the task turn ends
+team locks anikuro
+team budget anikuro 20M                         # per-agent daily token limit (0 = off)
+```
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `HIVE_ROTATE_TOKENS` | `100000` | Above this context size the agent writes a handoff memory and continues in a fresh session (0 = off) |
+| `HIVE_MAX_STEPS` | `600` | Stop an `agy` turn that runs away past this many steps (0 = off) |
+| `HIVE_TURN_TIMEOUT` | `3600` | Hard time limit per turn, seconds |
+
+Tests: `python tests/run_all.py`
+
 ---
 
 ## 👥 Team Context Awareness
 
 When you run agents with HiveForge, every agent is automatically context-aware:
 1. **Dynamic turn context** is injected so the LLM knows its identity, teammates, and the `/btw` communication protocol.
-2. A persistent **`TEAM_ORCHESTRATION.md`** and **`AGENTS.md`** are automatically maintained in the project directory with current roles and guidelines.
+2. A **`TEAM_ORCHESTRATION.md`** is maintained in the project directory with roles and rules. HiveForge never touches your own `AGENTS.md`.
+3. Each agent keeps a handoff memory in **`.hive/memory/<agent>.md`**, used when its session is rotated to save tokens.
 
 ---
 
