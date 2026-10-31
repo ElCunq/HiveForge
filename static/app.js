@@ -545,6 +545,47 @@
     // ----------------- Kanban & Locks Logic -----------------
     let teamLocks = [];
     let teamTasks = [];
+    let teamLedger = [];
+
+    // HiveForge task ledger: status -> [pill class, label]
+    const LEDGER_STATUS = {
+      queued: ['todo', '○ SIRADA'], running: ['in_progress', '⚡ ÇALIŞIYOR'], sent: ['in_progress', '⇢ TMUX'],
+      done: ['review', '◎ İNCELEME BEKLİYOR'], error: ['blocked', '▲ HATA'], rejected: ['blocked', '↺ REDDEDİLDİ'],
+      approved: ['done', '✓ ONAYLANDI'], deployed: ['done', '🚀 DEPLOY EDİLDİ'],
+    };
+
+    function renderLedgerCard(t) {
+      const [pill, label] = LEDGER_STATUS[t.status] || ['todo', t.status.toUpperCase()];
+      const canReview = t.status === 'done' || t.status === 'error';
+      return `
+        <div class="kanban-task-card">
+          <div class="kanban-task-header">
+            <span class="kanban-status-pill ${pill}">${label}</span>
+            <span style="font-size:0.65rem; color:var(--text-dim); font-family:var(--font-mono);">#${t.id} · ${escapeHtml(t.target)} · ${formatTokens(t.tokens || 0)}</span>
+          </div>
+          <div class="kanban-task-title">${escapeHtml(t.title || '(başlıksız görev)')}</div>
+          ${t.review_note ? `<div style="font-size:0.68rem; color:#f87171; margin-top:4px;">↳ ${escapeHtml(t.review_note)}</div>` : ''}
+          ${canReview ? `
+            <div style="display:flex; gap:6px; margin-top:8px;">
+              <button class="quick-pill" style="padding:3px 10px; font-size:0.68rem;" onclick="reviewLedgerTask(${t.id}, true)">✓ Onayla</button>
+              <button class="quick-pill" style="padding:3px 10px; font-size:0.68rem;" onclick="reviewLedgerTask(${t.id}, false)">↺ Reddet</button>
+            </div>` : ''}
+        </div>`;
+    }
+
+    async function reviewLedgerTask(id, approve) {
+      let note = '';
+      if (!approve) {
+        note = prompt(`#${id} için düzeltme notu (ajana geri gönderilir, boş bırakırsan sadece reddedilir):`) ;
+        if (note === null) return;
+      }
+      const res = await fetch('/api/task/review', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team: state.team, id, decision: approve ? 'approve' : 'reject', note, sender: 'User' }),
+      });
+      const data = await res.json();
+      if (!data.success) alert(`Hata: ${data.error}`);
+    }
 
     function toggleKanbanDrawer() {
       const d = document.getElementById('kanbanDrawer');
@@ -572,14 +613,17 @@
 
     function refreshKanbanView() {
       const container = document.getElementById('kanbanTasksList');
+      const sectionTitle = (txt) => `<div style="font-size:0.68rem; font-weight:700; letter-spacing:0.06em; color:var(--text-dim); margin:6px 0 8px;">${txt}</div>`;
+      document.getElementById('kanbanCountBadge').innerText = teamLedger.length + (teamTasks || []).length;
+      let html = sectionTitle(`HIVEFORGE GÖREVLERİ (${teamLedger.length} açık)`);
+      html += teamLedger.length ? teamLedger.map(renderLedgerCard).join('')
+        : '<div style="color:var(--text-dim); font-size:0.72rem; padding:6px 0 14px;">Açık görev yok.</div>';
+      html += sectionTitle('TEAM_MEMORY.md');
       if (!teamTasks || teamTasks.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-dim); font-size:0.75rem; text-align:center; padding:30px 0;">Aktif görev bulunamadı.<br>TEAM_MEMORY.md içinde - [ ] formatında görev ekleyebilirsiniz.</div>';
-        document.getElementById('kanbanCountBadge').innerText = '0';
+        container.innerHTML = html + '<div style="color:var(--text-dim); font-size:0.75rem; text-align:center; padding:20px 0;">TEAM_MEMORY.md içinde - [ ] formatında görev bulunamadı.</div>';
         return;
       }
 
-      document.getElementById('kanbanCountBadge').innerText = teamTasks.length;
-      let html = '';
       teamTasks.forEach((t, i) => {
         const st = t.status || 'todo';
         const stLabel = st === 'done' ? '✓ TAMAMLANDI' : (st === 'in_progress' ? '⚡ SÜRÜYOR' : (st === 'blocked' ? '▲ ENGEL' : '○ BEKLİYOR'));
@@ -1367,6 +1411,12 @@
     }
 
     function handleStreamMessage(msg) {
+      if (msg.type === 'tasks_snapshot') {
+        teamLedger = msg.tasks || [];
+        refreshKanbanView();
+        return;
+      }
+
       if (msg.type === 'tokens_snapshot') {
         if (msg.tokens) {
           latestTokenData = msg.tokens;

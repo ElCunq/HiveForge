@@ -281,6 +281,12 @@ def init_db() -> None:
         if "total_tokens" not in turn_cols:
             cursor.execute("ALTER TABLE agent_turns ADD COLUMN total_tokens INTEGER DEFAULT 0;")
 
+        cursor.execute("PRAGMA table_info(dispatch_queue);")
+        queue_cols = [c[1] for c in cursor.fetchall()]
+        for col, ddl in (("review_note", "TEXT DEFAULT ''"), ("tokens", "INTEGER DEFAULT 0"), ("updated_at", "TEXT DEFAULT ''")):
+            if col not in queue_cols:
+                cursor.execute(f"ALTER TABLE dispatch_queue ADD COLUMN {col} {ddl};")
+
         seed_builtin_tools(conn)
 
 
@@ -1483,6 +1489,7 @@ async def dispatch_message(
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         dispatched_names = []
+        task_ids: List[int] = []
 
         for idx, ag in enumerate(targets_to_run):
             ag_target = ag["target"]
@@ -1513,6 +1520,7 @@ async def dispatch_message(
                 """,
                 (team_name, ag_target, sender, msg_type, final_prompt, "sent" if interactive_pane else "queued", now),
             ).lastrowid
+            task_ids.append(queue_id)
             if interactive_pane:
                 subprocess.run(["tmux", "send-keys", "-t", interactive_pane, "-l", final_prompt], check=False)
                 subprocess.run(["tmux", "send-keys", "-t", interactive_pane, "C-m"], check=False)
@@ -1544,6 +1552,7 @@ async def dispatch_message(
         return {
             "success": True,
             "dispatched": dispatched_names,
+            "task_ids": task_ids,
             "output": f"Görev iletildi -> {', '.join(dispatched_names)}",
         }
 
@@ -1574,10 +1583,8 @@ async def _delayed_headless_launch(
         _set_queue_status(queue_id, "running")
         # cid may have been detected by the previous queued turn
         if not cid:
-            with get_db() as conn:
-                row = (conn.execute("SELECT lead_cid AS cid FROM teams WHERE name = ?", (team_name,)) if is_lead else
-                       conn.execute("SELECT cid FROM agents WHERE team_name = ? AND target = ?", (team_name, target))).fetchone()
-                cid = (row["cid"] if row else "") or ""
+            cid = _agent_cid(team_name, target, is_lead)
+        start_cid, start_tokens = cid, _cum_tokens(team_name, target, runtime, model, cid)
         cid = await _rotate_session_if_large(team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, is_lead)
         try:
             ok, _, output = await execute_headless_agent_turn(
@@ -1586,14 +1593,21 @@ async def _delayed_headless_launch(
         except Exception as e:
             output = f"Hata: {e}"
         finally:
-            _set_queue_status(queue_id, "done" if ok else "error", output)
+            # cost = growth of the old session (incl. a handoff turn) + everything the new session used
+            end_cid = _agent_cid(team_name, target, is_lead)
+            spent = _cum_tokens(team_name, target, runtime, model, start_cid) - start_tokens if start_cid else 0
+            if end_cid and end_cid != start_cid:
+                spent += _cum_tokens(team_name, target, runtime, model, end_cid)
+            _set_queue_status(queue_id, "done" if ok else "error", output, tokens=max(0, spent))
     if ok and hops < BTW_MAX_HOPS:
         await route_btw_notes(team_name, target, output, hops + 1)
     # Result callback: an agent that dispatched this task gets the outcome pushed back, so it never needs to poll.
     if msg_type == "dispatch" and sender.startswith("@") and sender != target and hops < BTW_MAX_HOPS:
         status = "TAMAMLANDI" if ok else "HATA"
         await dispatch_message(
-            team_name, sender, f"[GÖREV SONUCU — {target} • {status}]\n{(output or '').strip()[-1500:]}",
+            team_name, sender,
+            f"[GÖREV SONUCU #{queue_id} — {target} • {status}]\n{(output or '').strip()[-1500:]}\n\n"
+            f"Denetle: `team review {team_name} {queue_id} onay` veya `team review {team_name} {queue_id} ret \"düzeltme notu\"`",
             sender=target, msg_type="note", hops=hops + 1,
         )
 
@@ -1621,14 +1635,86 @@ async def _rotate_session_if_large(
     return ""
 
 
-def _set_queue_status(queue_id: Optional[int], status: str, result: str = "") -> None:
+def _set_queue_status(queue_id: Optional[int], status: str, result: str = "", tokens: Optional[int] = None) -> None:
     if queue_id is None:
         return
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
+        conn.execute("UPDATE dispatch_queue SET status = ?, updated_at = ? WHERE id = ?", (status, now, queue_id))
         if result:
-            conn.execute("UPDATE dispatch_queue SET status = ?, result_preview = ? WHERE id = ?", (status, result[-500:], queue_id))
-        else:
-            conn.execute("UPDATE dispatch_queue SET status = ? WHERE id = ?", (status, queue_id))
+            conn.execute("UPDATE dispatch_queue SET result_preview = ? WHERE id = ?", (result[-500:], queue_id))
+        if tokens is not None:
+            conn.execute("UPDATE dispatch_queue SET tokens = ? WHERE id = ?", (tokens, queue_id))
+
+
+def _agent_cid(team_name: str, target: str, is_lead: bool) -> str:
+    with get_db() as conn:
+        row = (conn.execute("SELECT lead_cid AS cid FROM teams WHERE name = ?", (team_name,)) if is_lead else
+               conn.execute("SELECT cid FROM agents WHERE team_name = ? AND target = ?", (team_name, target))).fetchone()
+    return (row["cid"] if row else "") or ""
+
+
+def _cum_tokens(team_name: str, target: str, runtime: str, model: str, cid: str) -> int:
+    if not cid and runtime == "agy":
+        return 0
+    snap = read_brain_snapshot(cid, task_key=f"{team_name}:{target}", runtime=runtime, team_name=team_name, target=target, model=model)
+    return int(snap.get("telemetry", {}).get("cum_total_tokens", 0) or 0)
+
+
+TASK_OPEN_STATUSES = ("queued", "running", "done", "error", "rejected")
+
+
+def task_title(message: str) -> str:
+    text = clean_user_prompt(message or "")
+    for line in text.splitlines():
+        line = line.strip().strip("#*").strip()
+        if line:
+            return line[:140]
+    return ""
+
+
+def list_tasks(team_name: str, include_closed: bool = False, limit: int = 60) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM dispatch_queue WHERE team_name = ? AND msg_type = 'dispatch'"
+    args: List[Any] = [team_name]
+    if not include_closed:
+        sql += f" AND status IN ({','.join('?' * len(TASK_OPEN_STATUSES))})"
+        args += list(TASK_OPEN_STATUSES)
+    with get_db() as conn:
+        rows = conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
+    return [
+        {
+            "id": r["id"], "target": r["target"], "sender": r["sender"], "status": r["status"],
+            "title": task_title(r["message"]), "result": r["result_preview"] or "", "review_note": r["review_note"] or "",
+            "tokens": r["tokens"] or 0, "created_at": r["created_at"], "updated_at": r["updated_at"] or "",
+        }
+        for r in rows
+    ]
+
+
+async def review_task(team_name: str, task_id: int, approve: bool, note: str = "", reviewer: str = "User") -> Dict[str, Any]:
+    """Lead/user verdict on a finished task. A rejection with a note sends the fix request straight back to the agent."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM dispatch_queue WHERE id = ? AND team_name = ? AND msg_type = 'dispatch'", (task_id, team_name)
+        ).fetchone()
+    if not row:
+        return {"success": False, "error": f"Görev bulunamadı: #{task_id}"}
+    if row["status"] not in ("done", "error"):
+        return {"success": False, "error": f"#{task_id} incelenecek durumda değil (durum: {row['status']})."}
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE dispatch_queue SET status = ?, review_note = ?, updated_at = ? WHERE id = ?",
+            ("approved" if approve else "rejected", note, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), task_id),
+        )
+    res: Dict[str, Any] = {"success": True, "id": task_id, "status": "approved" if approve else "rejected"}
+    if not approve and note:
+        retry = await dispatch_message(
+            team_name, row["target"],
+            f"[#{task_id} REDDEDİLDİ — düzelt] {note}\n\nÖnceki görev:\n{clean_user_prompt(row['message'])[:1500]}",
+            sender=reviewer,
+        )
+        res["retry"] = retry
+    return res
 
 
 async def route_btw_notes(team_name: str, sender: str, output: str, hops: int) -> int:

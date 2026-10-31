@@ -31,7 +31,7 @@ async def main():
     assert a_calls[1][1] == "" and a_calls[1][2] == "endpoint ekle", a_calls[1]
     assert db_cid("@a") == ""
     lead_calls = [c for c in calls if c[0] == "@lead"]
-    assert lead_calls and "[GÖREV SONUCU — @a • TAMAMLANDI]" in lead_calls[0][2] and "@a işi bitirdi" in lead_calls[0][2], lead_calls
+    assert lead_calls and "[GÖREV SONUCU #1 — @a • TAMAMLANDI]" in lead_calls[0][2] and "@a işi bitirdi" in lead_calls[0][2], lead_calls
     assert lead_calls[0][1] == "leadcid", "50k lead rotate edilmemeli"
     assert len([c for c in calls if c[0] == "@lead"]) == 1, "sonuç bildirimi geri bildirim döngüsü yaratmamalı"
     # 2) failed handoff keeps the old session

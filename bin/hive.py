@@ -162,6 +162,8 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team watch       [takım] [target]  # Canlı Markdown, Düşünce ve Araç akışını izler
   team dispatch    <takım> <@hedef> <mesaj>  # Görev iletir
   team note        <takım> <@hedef> [--from <ajan>] <not>  # /btw asenkron not iletir
+  team tasks       <takım> [--all]           # Görev kayıtları (durum, token maliyeti)
+  team review      <takım> <id> onay|ret ["not"]  # Biten görevi denetle (ret + not = ajana geri gönder)
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
   team tools       [list | run <takım> <hedef> <araç-id>]
   team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|codex|aider|ollama] [--model "..."]
@@ -351,10 +353,52 @@ def cmd_dispatch(args):
     ensure_server_running()
     res = api_post("/api/dispatch", {"team": args[0], "target": args[1], "message": " ".join(args[2:]), "sender": os.environ.get("HIVE_AGENT", "CLI")})
     if res.get("success"):
-        print(f"[OK] Mesaj {args[1]} hedefine iletildi. ({res.get('message', '')})")
+        ids = ", ".join(f"#{i}" for i in res.get("task_ids") or [])
+        print(f"[OK] Görev {ids} {args[1]} hedefine iletildi. Bitince sonuç bildirimi gelir; bekleme yapma.")
         return 0
     print(f"[HATA] {res.get('error')}")
     return 1
+
+
+def cmd_tasks(args):
+    if not args:
+        print("Kullanım: team tasks <takım> [--all]")
+        return 1
+    ensure_server_running()
+    q = "?all=1" if "--all" in args else ""
+    with urllib.request.urlopen(f"{API_URL}/api/team/{args[0]}/ledger{q}") as resp:
+        tasks = json.loads(resp.read().decode("utf-8")).get("tasks", [])
+    if not tasks:
+        print("Açık görev yok." if not q else "Görev yok.")
+        return 0
+    for t in tasks:
+        print(f"#{t['id']:<5} {t['status']:<9} {t['target']:<12} {_fmt_tokens(t['tokens']):>7}  {t['title'][:80]}")
+        if t["review_note"]:
+            print(f"       ↳ inceleme: {t['review_note'][:100]}")
+    return 0
+
+
+def _fmt_tokens(n: int) -> str:
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else (f"{n / 1e3:.0f}k" if n >= 1e3 else str(n))
+
+
+def cmd_review(args):
+    if len(args) < 3 or args[2].lower() not in ("onay", "ret", "approve", "reject"):
+        print('Kullanım: team review <takım> <görev-id> onay|ret ["düzeltme notu"]')
+        return 1
+    ensure_server_running()
+    res = api_post("/api/task/review", {
+        "team": args[0], "id": args[1].lstrip("#"), "decision": args[2], "note": " ".join(args[3:]),
+        "sender": os.environ.get("HIVE_AGENT", "User"),
+    })
+    if not res.get("success"):
+        print(f"[HATA] {res.get('error')}")
+        return 1
+    extra = ""
+    if res.get("retry", {}).get("task_ids"):
+        extra = f" Düzeltme görevi #{res['retry']['task_ids'][0]} olarak geri gönderildi."
+    print(f"[OK] #{res['id']} → {res['status']}.{extra}")
+    return 0
 
 
 def cmd_note(args):
@@ -539,6 +583,8 @@ COMMANDS = {
     **dict.fromkeys(["remove-agent", "rm-agent", "kill-agent", "delete-agent"], cmd_remove_agent),
     **dict.fromkeys(["dispatch", "send"], cmd_dispatch),
     **dict.fromkeys(["note", "btw"], cmd_note),
+    **dict.fromkeys(["tasks", "task", "ledger"], cmd_tasks),
+    "review": cmd_review,
     **dict.fromkeys(["logs", "log"], cmd_logs),
     **dict.fromkeys(["tools", "tool"], cmd_tools),
     **dict.fromkeys(["open", "jump"], cmd_open),
