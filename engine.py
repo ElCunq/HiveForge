@@ -15,6 +15,7 @@ import json
 import time
 import uuid
 import sqlite3
+import contextlib
 import asyncio
 import subprocess
 import shutil
@@ -243,6 +244,18 @@ def init_db() -> None:
             icon TEXT DEFAULT '⚡',
             is_builtin INTEGER DEFAULT 0,
             created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS deploys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_name TEXT NOT NULL,
+            command TEXT NOT NULL,
+            requested_by TEXT DEFAULT '',
+            task_ids TEXT DEFAULT '',
+            status TEXT DEFAULT 'running',
+            output_tail TEXT DEFAULT '',
+            started_at TEXT,
+            finished_at TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS dispatch_queue (
@@ -1178,9 +1191,9 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         mem = agent_memory_file(team_name, target)
         is_lead = target == "@lead"
         lead_rule = (
-            f"• LİDER KURALI: Görevin dağıtmak, denetlemek, deploy etmek ve kullanıcıyla iletişim. Kod yazma, dosya düzenleme, "
-            f"derleme/test, ssh/curl ile hata ayıklama gibi uygulama işlerini KENDİN YAPMA; `team dispatch {team_name} @hedef \"görev\"` "
-            f"ile ilgili ajana ver. Deploy SENİN işin: çakışma olmasın diye ilgili ajanlar bitirip onay verdikten sonra sırayla sen yaparsın.\n"
+            f"• LİDER KURALI: Görevin dağıtmak, denetlemek, deploy ve kullanıcıyla iletişim. Kod yazma/düzenleme, derleme/test, "
+            f"ssh/curl ile hata ayıklamayı KENDİN YAPMA: `team dispatch {team_name} @hedef \"görev\"`. Deploy SENİN işin: "
+            f"`team review` ile onayla, sonra `team deploy {team_name} --tasks <id,...> -- <komut>`.\n"
         )
 
         if not first_turn:
@@ -1221,6 +1234,106 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         return ctx_prefix + user_prompt
     except Exception:
         return user_prompt
+
+
+SHIMS_DIR = PROJECT_ROOT / "bin" / "shims"
+
+
+def _agent_env(team_name: str, target: str) -> Dict[str, str]:
+    """Agents know who they are (result callbacks, deploy gate) and get the deploy-gate shims first on PATH."""
+    env = {**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target}
+    env.pop("HIVE_DEPLOY", None)
+    if not IS_WINDOWS:  # ponytail: shims are bash; Windows agents are not gated
+        env["PATH"] = f"{SHIMS_DIR}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+@contextlib.contextmanager
+def deploy_lock():
+    """One deploy at a time across all agents/terminals. ponytail: fcntl only; on Windows deploys are not serialized."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(BASE_DIR / "deploy.lock", "w") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[HiveForge] Başka bir deploy sürüyor, bitmesi bekleniyor...", flush=True)
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
+def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: List[int], force: bool = False) -> int:
+    """Lead-only, serialized deploy. Streams output, records history, marks approved tasks as deployed."""
+    if requested_by not in ("@lead", "User"):
+        print("[HiveForge] Deploy yetkisi sadece Tech Lead'de (@lead).")
+        return 126
+    if not command:
+        print("Kullanım: team deploy <takım> [--tasks 12,13] [--force] -- <deploy komutu>")
+        return 1
+    with get_db() as conn:
+        if not conn.execute("SELECT 1 FROM teams WHERE name = ?", (team_name,)).fetchone():
+            print(f"[HATA] Takım bulunamadı: {team_name}")
+            return 1
+        rows = conn.execute(
+            f"SELECT id, status FROM dispatch_queue WHERE team_name = ? AND id IN ({','.join('?' * len(task_ids))})",
+            (team_name, *task_ids),
+        ).fetchall() if task_ids else []
+        pending = conn.execute(
+            "SELECT id, target FROM dispatch_queue WHERE team_name = ? AND msg_type = 'dispatch' AND status = 'done'", (team_name,)
+        ).fetchall()
+    found = {r["id"]: r["status"] for r in rows}
+    not_ready = [f"#{i} ({found.get(i, 'yok')})" for i in task_ids if found.get(i) != "approved"]
+    if not_ready and not force:
+        print(f"[HiveForge] Deploy reddedildi: şu görevler onaylı değil: {', '.join(not_ready)}. Önce `team review` ile denetle (ya da --force).")
+        return 1
+    if pending and not task_ids:
+        print(f"[UYARI] İnceleme bekleyen görevler var: {', '.join(f'#{r[0]} {r[1]}' for r in pending)}")
+
+    cmd_str = " ".join(command)
+    now = lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with deploy_lock():
+        with get_db() as conn:
+            dep_id = conn.execute(
+                "INSERT INTO deploys (team_name, command, requested_by, task_ids, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)",
+                (team_name, cmd_str, requested_by, ",".join(map(str, task_ids)), now()),
+            ).lastrowid
+        print(f"[HiveForge] Deploy #{dep_id} başlıyor: {cmd_str}", flush=True)
+        tail: List[str] = []
+        try:
+            proc = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                env={**os.environ, "HIVE_DEPLOY": "1"},
+            )
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                tail = (tail + [line.rstrip()])[-40:]
+            code = proc.wait()
+        except FileNotFoundError as e:
+            tail, code = [str(e)], 127
+        status = "success" if code == 0 else "failed"
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE deploys SET status = ?, output_tail = ?, finished_at = ? WHERE id = ?",
+                (status, "\n".join(tail), now(), dep_id),
+            )
+            if code == 0 and task_ids:
+                conn.execute(
+                    f"UPDATE dispatch_queue SET status = 'deployed', updated_at = ? WHERE team_name = ? AND status = 'approved' "
+                    f"AND id IN ({','.join('?' * len(task_ids))})",
+                    (now(), team_name, *task_ids),
+                )
+    print(f"[HiveForge] Deploy #{dep_id}: {'BAŞARILI' if code == 0 else f'BAŞARISIZ (çıkış kodu {code})'}")
+    return code
+
+
+def list_deploys(team_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM deploys WHERE team_name = ? ORDER BY id DESC LIMIT ?", (team_name, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _save_agent_cid(team_name: str, target: str, is_lead: bool, cid: str) -> None:
@@ -1328,7 +1441,7 @@ async def execute_headless_agent_turn(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=not IS_WINDOWS,  # own process group, so a timeout can kill the agent's child shells too
-        env={**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target},
+        env=_agent_env(team_name, target),
     )
     ACTIVE_PROCESSES[task_key] = proc
     ACTIVE_TASKS_META[task_key] = {

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# HiveForge deploy gate. Agent processes get this dir first on PATH, so inside an agent `caprover` only runs
+# through `team deploy` (lead only, one deploy at a time). Outside agents (HIVE_AGENT unset) it is transparent.
+if [ -n "$HIVE_AGENT" ] && [ -z "$HIVE_DEPLOY" ]; then
+  if [ "$HIVE_AGENT" = "@lead" ]; then
+    echo "[HiveForge] caprover doğrudan çalıştırılamaz. Kullan: team deploy ${HIVE_TEAM:-<takım>} --tasks <id,...> -- caprover $*" >&2
+  else
+    echo "[HiveForge] Deploy yetkisi sadece Tech Lead'de. İşin bittiyse sonucunu bildir; deploy'u @lead yapar." >&2
+  fi
+  exit 126
+fi
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$SELF_DIR" | paste -sd: -)"
+exec caprover "$@"
