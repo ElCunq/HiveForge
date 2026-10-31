@@ -169,6 +169,7 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team lock        <takım> <dosya...>        # Dosyaları kilitle (görev turu bitince otomatik açılır)
   team unlock      <takım> [dosya...]        # Kilitlerini aç (dosya verilmezse hepsi)
   team locks       <takım>                   # Aktif kilitler
+  team budget      <takım> [limit]           # Ajan başı günlük token bütçesi (20M, 500k, 0=kapalı) ve bugünkü harcama
   team ask-user    <takım> "soru"            # Kullanıcıya soru (cevap soran ajana not olarak döner)
   team tell-user   <takım> "mesaj"           # Kullanıcıya bilgi (arayüz gelen kutusu + bildirim)
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
@@ -423,6 +424,34 @@ def _cmd_inbox(args, kind):
     return 0
 
 
+def _parse_tokens(txt: str) -> int:
+    t = txt.strip().lower().replace("_", "")
+    mult = 1_000_000 if t.endswith("m") else 1_000 if t.endswith("k") else 1
+    return int(float(t.rstrip("mk")) * mult)
+
+
+def cmd_budget(args):
+    if not args:
+        print("Kullanım: team budget <takım> [ajan başı günlük limit, ör. 20M | 500k | 0=kapalı]")
+        return 1
+    eng = _engine()
+    if len(args) > 1:
+        try:
+            limit = _parse_tokens(args[1])
+        except ValueError:
+            print("[HATA] Limit sayı olmalı (ör. 20M, 500k, 0)")
+            return 1
+        if not eng.set_daily_budget(args[0], limit):
+            print(f"[HATA] Takım bulunamadı: {args[0]}")
+            return 1
+    budget = eng.get_daily_budget(args[0])
+    print(f"Günlük bütçe (ajan başı): {_fmt_tokens(budget) if budget else 'kapalı'}")
+    for target, used in sorted(eng.tokens_today(args[0]).items(), key=lambda x: -x[1]):
+        flag = "  ⚠ AŞILDI" if budget and used >= budget else ""
+        print(f"  {target:<14} bugün {_fmt_tokens(used):>7}{flag}")
+    return 0
+
+
 def cmd_lock(args):
     if len(args) < 2:
         print("Kullanım: team lock <takım> <dosya...>")
@@ -673,6 +702,7 @@ COMMANDS = {
     "lock": cmd_lock,
     "unlock": cmd_unlock,
     "locks": cmd_locks,
+    "budget": cmd_budget,
     "ask-user": lambda a: _cmd_inbox(a, "question"),
     "tell-user": lambda a: _cmd_inbox(a, "info"),
     **dict.fromkeys(["logs", "log"], cmd_logs),
