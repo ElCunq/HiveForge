@@ -166,6 +166,8 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team review      <takım> <id> onay|ret ["not"]  # Biten görevi denetle (ret + not = ajana geri gönder)
   team deploy      <takım> [--tasks 12,13] -- <komut>  # Sadece lead: sıralı deploy, onaylı görevleri işaretler
   team deploys     <takım>                   # Deploy geçmişi
+  team ask-user    <takım> "soru"            # Kullanıcıya soru (cevap soran ajana not olarak döner)
+  team tell-user   <takım> "mesaj"           # Kullanıcıya bilgi (arayüz gelen kutusu + bildirim)
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
   team tools       [list | run <takım> <hedef> <araç-id>]
   team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|codex|aider|ollama] [--model "..."]
@@ -403,6 +405,21 @@ def cmd_review(args):
     return 0
 
 
+def _cmd_inbox(args, kind):
+    if len(args) < 2:
+        print(f'Kullanım: team {"ask-user" if kind == "question" else "tell-user"} <takım> "mesaj"')
+        return 1
+    ensure_server_running()
+    res = api_post("/api/inbox", {"team": args[0], "message": " ".join(args[1:]), "kind": kind,
+                                  "sender": os.environ.get("HIVE_AGENT", "CLI")})
+    if not res.get("success"):
+        print(f"[HATA] {res.get('error')}")
+        return 1
+    tail = " Cevap sana not olarak gelecek; beklemeden turunu bitir." if kind == "question" else ""
+    print(f"[OK] Kullanıcıya iletildi (#{res['id']}).{tail}")
+    return 0
+
+
 def cmd_deploy(args):
     """team deploy <takım> [--tasks 12,13] [--force] -- <deploy komutu...>"""
     if "--" not in args or args.index("--") < 1:
@@ -615,6 +632,8 @@ COMMANDS = {
     "review": cmd_review,
     "deploy": cmd_deploy,
     "deploys": cmd_deploys,
+    "ask-user": lambda a: _cmd_inbox(a, "question"),
+    "tell-user": lambda a: _cmd_inbox(a, "info"),
     **dict.fromkeys(["logs", "log"], cmd_logs),
     **dict.fromkeys(["tools", "tool"], cmd_tools),
     **dict.fromkeys(["open", "jump"], cmd_open),
