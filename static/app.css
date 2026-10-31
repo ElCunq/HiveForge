@@ -916,6 +916,10 @@
       background: rgba(148, 163, 184, 0.12);
       color: #94a3b8;
     }
+    .kanban-status-pill.review {
+      background: rgba(56, 189, 248, 0.15);
+      color: #7dd3fc;
+    }
     .kanban-status-pill.blocked {
       background: rgba(239, 68, 68, 0.15);
       color: #f87171;
