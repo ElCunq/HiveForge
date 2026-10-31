@@ -55,9 +55,21 @@ def server_is_up() -> bool:
         return False
 
 
+def _systemd(action: str) -> bool:
+    """Linux: if install.sh set up hiveforge.service, let systemd own the server (a manual copy would fight it for the port)."""
+    if IS_WINDOWS or not (Path.home() / ".config/systemd/user/hiveforge.service").exists():
+        return False
+    return subprocess.run(["systemctl", "--user", action, "hiveforge.service"], capture_output=True).returncode == 0
+
+
 def ensure_server_running() -> None:
     if server_is_up():
         return
+    if _systemd("start"):
+        for _ in range(40):
+            if server_is_up():
+                return
+            time.sleep(0.25)
     log_dir = BASE_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = open(log_dir / "server.log", "ab")
@@ -111,7 +123,9 @@ def stop_server() -> None:
         if not server_is_up():
             print("[BİLGİ] Sunucu zaten çalışmıyor.")
             return
-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+        _systemd("stop")
+        if server_is_up():
+            subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
     for _ in range(20):
         if not server_is_up():
             print("[OK] Sunucu durduruldu.")
@@ -134,7 +148,7 @@ def api_post(path: str, payload: dict) -> dict:
 # ----------------------------- Komutlar -----------------------------
 
 HELP = """================================================================================
-  HIVEFORGE: Multi-CLI Agent Team Orchestration CLI (Windows / Cross-platform)
+  HIVEFORGE: Multi-CLI Agent Team Orchestration CLI (Linux · macOS · Windows)
 ================================================================================
 Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   hive / team                  # Kokpiti açar ve anlık durum tablosunu gösterir
@@ -147,7 +161,7 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team open        <@hedef> [takım]  # İlgili ajanın interaktif oturumuna girer
   team watch       [takım] [target]  # Canlı Markdown, Düşünce ve Araç akışını izler
   team dispatch    <takım> <@hedef> <mesaj>  # Görev iletir
-  team note        <takım> <@hedef> <not>    # /btw asenkron not iletir
+  team note        <takım> <@hedef> [--from <ajan>] <not>  # /btw asenkron not iletir
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
   team tools       [list | run <takım> <hedef> <araç-id>]
   team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|codex|aider|ollama] [--model "..."]
@@ -184,7 +198,7 @@ def _fmt_tokens(n):
 
 def cmd_agents(args):
     engine = _engine()
-    tname = args[0] if args else "anikuro"
+    tname = args[0] if args else _engine().default_team()
     engine.sync_and_migrate()
     with engine.get_db() as conn:
         team = conn.execute("SELECT * FROM teams WHERE name=?", (tname,)).fetchone()
@@ -221,7 +235,7 @@ def cmd_agents(args):
 
 def cmd_tokens(args):
     engine = _engine()
-    tname = args[0] if args else "anikuro"
+    tname = args[0] if args else _engine().default_team()
     engine.sync_and_migrate()
     analytics = engine.get_team_token_analytics(tname)
     if "error" in analytics:
@@ -335,7 +349,7 @@ def cmd_dispatch(args):
         print("Kullanım: team dispatch <takım> <@hedef> <mesaj>")
         return 1
     ensure_server_running()
-    res = api_post("/api/dispatch", {"team": args[0], "target": args[1], "message": " ".join(args[2:]), "sender": "CLI"})
+    res = api_post("/api/dispatch", {"team": args[0], "target": args[1], "message": " ".join(args[2:]), "sender": os.environ.get("HIVE_AGENT", "CLI")})
     if res.get("success"):
         print(f"[OK] Mesaj {args[1]} hedefine iletildi. ({res.get('message', '')})")
         return 0
@@ -347,8 +361,9 @@ def cmd_note(args):
     if len(args) < 3:
         print("Kullanım: team note <takım> <@hedef> <not>")
         return 1
+    flags, rest = _parse_flags(args[2:], {"--from": "sender"})
     ensure_server_running()
-    res = api_post("/api/note", {"team": args[0], "target": args[1], "note": " ".join(args[2:]), "sender": "Tech Lead (CLI)"})
+    res = api_post("/api/note", {"team": args[0], "target": args[1], "note": " ".join(rest), "sender": flags.get("sender", os.environ.get("HIVE_AGENT", "Tech Lead (CLI)"))})
     print(f"[OK] /btw notu {args[1]} hedefine iletildi." if res.get("success") else f"[HATA] {res.get('error')}")
     return 0 if res.get("success") else 1
 
@@ -409,7 +424,7 @@ def cmd_open(args):
         print("Kullanım: team open <@hedef> [takım-adı]")
         return 1
     engine = _engine()
-    target, team_name = args[0], (args[1] if len(args) > 1 else "anikuro")
+    target, team_name = args[0], (args[1] if len(args) > 1 else _engine().default_team())
     engine.sync_and_migrate()
     with engine.get_db() as conn:
         if target in ("@lead", "lead"):
@@ -446,7 +461,7 @@ def cmd_open(args):
 
 def cmd_watch(args):
     engine = _engine()
-    team_name = args[0] if args else "anikuro"
+    team_name = args[0] if args else _engine().default_team()
     target = (args[1] if len(args) > 1 else "all").lower().lstrip("@")
     ensure_server_running()
     print(f"\033[1;36m=== HIVEFORGE CANLI AKIŞ: Takım={team_name.upper()}, Hedef=@{target} ===\033[0m")
@@ -499,10 +514,8 @@ def cmd_ui(args):
     print("=" * 66)
     if args:
         return cmd_agents(args[:1])
-    engine = _engine()
-    with engine.get_db() as conn:
-        has_default = conn.execute("SELECT 1 FROM teams WHERE name='anikuro'").fetchone()
-    return cmd_agents(["anikuro"]) if has_default else cmd_list([])
+    default = _engine().default_team()
+    return cmd_agents([default]) if default else cmd_list([])
 
 
 def cmd_server(_args):
@@ -511,7 +524,8 @@ def cmd_server(_args):
 
 
 def cmd_tmux(_args):
-    print("[BİLGİ] tmux Mission Control Windows'ta desteklenmiyor. Bunun yerine: hive watch <takım> [hedef]")
+    # Linux/macOS: `team tmux` is handled by the bin/team wrapper before reaching here.
+    print("[BİLGİ] tmux Mission Control yalnızca Linux/macOS'ta `team tmux` ile çalışır. Bunun yerine: hive watch <takım> [hedef]")
     return 1
 
 
