@@ -164,6 +164,8 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team note        <takım> <@hedef> [--from <ajan>] <not>  # /btw asenkron not iletir
   team tasks       <takım> [--all]           # Görev kayıtları (durum, token maliyeti)
   team review      <takım> <id> onay|ret ["not"]  # Biten görevi denetle (ret + not = ajana geri gönder)
+  team deploy      <takım> [--tasks 12,13] -- <komut>  # Sadece lead: sıralı deploy, onaylı görevleri işaretler
+  team deploys     <takım>                   # Deploy geçmişi
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
   team tools       [list | run <takım> <hedef> <araç-id>]
   team add-agent   <takım> --name "..." --role "..." [--runtime agy|claude|codex|aider|ollama] [--model "..."]
@@ -401,6 +403,32 @@ def cmd_review(args):
     return 0
 
 
+def cmd_deploy(args):
+    """team deploy <takım> [--tasks 12,13] [--force] -- <deploy komutu...>"""
+    if "--" not in args or args.index("--") < 1:
+        print("Kullanım: team deploy <takım> [--tasks 12,13] [--force] -- <deploy komutu>")
+        return 1
+    sep = args.index("--")
+    opts, command = args[:sep], args[sep + 1:]
+    flags, rest = _parse_flags(opts[1:], {"--tasks": "tasks"})
+    try:
+        task_ids = [int(x.strip().lstrip("#")) for x in flags.get("tasks", "").split(",") if x.strip()]
+    except ValueError:
+        print("[HATA] --tasks virgülle ayrılmış görev numaraları olmalı (ör. --tasks 12,13)")
+        return 1
+    return _engine().run_deploy(opts[0], command, os.environ.get("HIVE_AGENT", "User"), task_ids, force="--force" in rest)
+
+
+def cmd_deploys(args):
+    if not args:
+        print("Kullanım: team deploys <takım>")
+        return 1
+    for d in _engine().list_deploys(args[0]):
+        tasks = f" görevler: {d['task_ids']}" if d["task_ids"] else ""
+        print(f"#{d['id']:<4} {d['status']:<8} {d['started_at']}  {d['requested_by']:<6} {d['command'][:70]}{tasks}")
+    return 0
+
+
 def cmd_note(args):
     if len(args) < 3:
         print("Kullanım: team note <takım> <@hedef> <not>")
@@ -585,6 +613,8 @@ COMMANDS = {
     **dict.fromkeys(["note", "btw"], cmd_note),
     **dict.fromkeys(["tasks", "task", "ledger"], cmd_tasks),
     "review": cmd_review,
+    "deploy": cmd_deploy,
+    "deploys": cmd_deploys,
     **dict.fromkeys(["logs", "log"], cmd_logs),
     **dict.fromkeys(["tools", "tool"], cmd_tools),
     **dict.fromkeys(["open", "jump"], cmd_open),
