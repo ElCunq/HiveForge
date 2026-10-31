@@ -431,6 +431,27 @@ async def api_get_tasks(request):
     return web.json_response({"success": True, "tasks": tasks})
 
 
+async def api_get_ledger(request):
+    team_name = request.match_info.get("name")
+    include_closed = request.query.get("all") in ("1", "true")
+    return web.json_response({"success": True, "tasks": engine.list_tasks(team_name, include_closed=include_closed)})
+
+
+async def api_review_task(request):
+    try:
+        data = await request.json()
+        task_id = int(data.get("id"))
+    except Exception:
+        return web.json_response({"success": False, "error": "Geçersiz istek (team, id, decision gerekli)"}, status=400)
+    decision = str(data.get("decision", "")).lower()
+    if decision not in ("approve", "reject", "onay", "ret"):
+        return web.json_response({"success": False, "error": "decision: approve|reject"}, status=400)
+    res = await engine.review_task(
+        data.get("team", ""), task_id, decision in ("approve", "onay"), data.get("note", ""), data.get("sender") or "User"
+    )
+    return web.json_response(res, status=200 if res.get("success") else 400)
+
+
 async def api_send_note(request):
     try:
         data = await request.json()
@@ -760,6 +781,12 @@ async def websocket_handler(request):
                     "telemetry": lead_snap["telemetry"],
                 })
 
+            ledger = engine.list_tasks(team_name)
+            ledger_sig = "|".join(f"{t['id']}:{t['status']}:{t['tokens']}" for t in ledger)
+            if last_hashes.get("ledger") != ledger_sig:
+                last_hashes["ledger"] = ledger_sig
+                await ws.send_json({"type": "tasks_snapshot", "tasks": ledger})
+
             # Team-wide live token analytics snapshot
             tok_analytics = engine.get_team_token_analytics(team_name)
             tok_sig = f"{tok_analytics['total_cum_tokens']}|{tok_analytics['total_context_tokens']}"
@@ -817,6 +844,8 @@ def create_app():
     app.router.add_post("/api/tools/create", api_create_tool)
     app.router.add_post("/api/tools/delete", api_delete_tool)
     app.router.add_post("/api/note", api_send_note)
+    app.router.add_get("/api/team/{name}/ledger", api_get_ledger)
+    app.router.add_post("/api/task/review", api_review_task)
     app.router.add_post("/api/team/create", api_create_team)
     app.router.add_post("/api/team/add-agent", api_add_agent)
     app.router.add_post("/api/team/remove-agent", api_remove_agent)
