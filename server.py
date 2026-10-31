@@ -31,7 +31,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # ----------------- Dosya Kilitleri & Çakışma Bariyeri -----------------
 
 def scan_team_locks(team_name: str, project_dir: str):
-    locks = []
+    locks = [
+        {"file": l["path"], "agent": l["agent"], "time": l["created_at"], "scope": "hiveforge"}
+        for l in engine.list_file_locks(team_name)
+    ]
     team_lock_file = TEAMS_DIR / team_name / "locks.json"
     if team_lock_file.exists():
         try:
@@ -811,6 +814,12 @@ async def websocket_handler(request):
             if last_hashes.get("ledger") != ledger_sig:
                 last_hashes["ledger"] = ledger_sig
                 await ws.send_json({"type": "tasks_snapshot", "tasks": ledger})
+
+            locks = scan_team_locks(team_name, team["project_dir"])
+            locks_sig = "|".join(f"{l['file']}:{l['agent']}" for l in locks)
+            if last_hashes.get("locks") != locks_sig:
+                last_hashes["locks"] = locks_sig
+                await ws.send_json({"type": "locks_snapshot", "locks": locks})
 
             inbox = engine.list_inbox(team_name)
             inbox_sig = "|".join(f"{i['id']}:{i['status']}" for i in inbox)

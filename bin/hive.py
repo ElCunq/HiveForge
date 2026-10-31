@@ -166,6 +166,9 @@ Kullanım (Windows'ta 'hive' / 'team' yerine 'hiveforge' yazın):
   team review      <takım> <id> onay|ret ["not"]  # Biten görevi denetle (ret + not = ajana geri gönder)
   team deploy      <takım> [--tasks 12,13] -- <komut>  # Sadece lead: sıralı deploy, onaylı görevleri işaretler
   team deploys     <takım>                   # Deploy geçmişi
+  team lock        <takım> <dosya...>        # Dosyaları kilitle (görev turu bitince otomatik açılır)
+  team unlock      <takım> [dosya...]        # Kilitlerini aç (dosya verilmezse hepsi)
+  team locks       <takım>                   # Aktif kilitler
   team ask-user    <takım> "soru"            # Kullanıcıya soru (cevap soran ajana not olarak döner)
   team tell-user   <takım> "mesaj"           # Kullanıcıya bilgi (arayüz gelen kutusu + bildirim)
   team logs        <takım> [hedef]           # Ajan çıktısını görüntüler
@@ -420,6 +423,41 @@ def _cmd_inbox(args, kind):
     return 0
 
 
+def cmd_lock(args):
+    if len(args) < 2:
+        print("Kullanım: team lock <takım> <dosya...>")
+        return 1
+    res = _engine().lock_files(args[0], os.environ.get("HIVE_AGENT", "User"), args[1:])
+    if res["success"]:
+        print(f"[OK] {len(res['locked'])} dosya kilitlendi.")
+        return 0
+    print("[KİLİTLİ] Şu dosyalar başka ajanda, hiçbiri kilitlenmedi:")
+    for path, owner in res["conflicts"].items():
+        print(f"  {owner:<12} {path}")
+    return 1
+
+
+def cmd_unlock(args):
+    if not args:
+        print("Kullanım: team unlock <takım> [dosya...]   (dosya verilmezse tüm kilitlerin açılır)")
+        return 1
+    n = _engine().unlock_files(args[0], os.environ.get("HIVE_AGENT", "User"), args[1:] or None)
+    print(f"[OK] {n} kilit açıldı.")
+    return 0
+
+
+def cmd_locks(args):
+    if not args:
+        print("Kullanım: team locks <takım>")
+        return 1
+    locks = _engine().list_file_locks(args[0])
+    for l in locks:
+        print(f"{l['agent']:<12} {l['created_at']}  {l['path']}")
+    if not locks:
+        print("Aktif kilit yok.")
+    return 0
+
+
 def cmd_deploy(args):
     """team deploy <takım> [--tasks 12,13] [--force] -- <deploy komutu...>"""
     if "--" not in args or args.index("--") < 1:
@@ -632,6 +670,9 @@ COMMANDS = {
     "review": cmd_review,
     "deploy": cmd_deploy,
     "deploys": cmd_deploys,
+    "lock": cmd_lock,
+    "unlock": cmd_unlock,
+    "locks": cmd_locks,
     "ask-user": lambda a: _cmd_inbox(a, "question"),
     "tell-user": lambda a: _cmd_inbox(a, "info"),
     **dict.fromkeys(["logs", "log"], cmd_logs),
