@@ -18,6 +18,7 @@ import sqlite3
 import asyncio
 import subprocess
 import shutil
+import signal
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
@@ -68,6 +69,23 @@ TEAMS_DIR.mkdir(parents=True, exist_ok=True)
 # Active async subprocess tasks keyed by f"{team}:{target}"
 ACTIVE_PROCESSES: Dict[str, asyncio.subprocess.Process] = {}
 ACTIVE_TASKS_META: Dict[str, Dict[str, Any]] = {}
+# One turn at a time per agent: two `agy --conversation <cid>` runs on the same conversation corrupt each other.
+AGENT_LOCKS: Dict[str, asyncio.Lock] = {}
+# Max agent->agent /btw hops before routing stops (prevents endless ping-pong between agents).
+BTW_MAX_HOPS = 3
+# A hung CLI would otherwise hold the agent's lock forever and block its queue.
+TURN_TIMEOUT_SEC = float(os.environ.get("HIVE_TURN_TIMEOUT", 3600))
+# Every step re-reads the whole context, so a 190k session costs ~190k tokens per step. Above this size the agent
+# writes a handoff memory and continues in a fresh session. 0 disables.
+ROTATE_TOKENS = int(os.environ.get("HIVE_ROTATE_TOKENS", 100_000))
+HANDOFF_PROMPT = (
+    "[HIVEFORGE OTURUM DEVRİ] Bağlamın {ctx:,} tokene ulaştı; bir sonraki görevden önce yeni bir oturuma geçeceksin. "
+    "Şimdi kod değiştirme. Sadece {mem} dosyasını (yoksa oluştur) şu başlıklarla güncelle, en fazla ~1500 kelime: "
+    "1) Rol ve sorumluluk alanın, 2) Tamamlanan işler ve alınan kararlar (neden), 3) Değiştirilen önemli dosyalar, "
+    "4) Kritik detaylar/kısıtlar ve açık sorunlar, 5) Devam eden iş ve bir sonraki adım. "
+    "Projenin kendi hafıza protokolü (ör. TEAM_MEMORY.md, history/) varsa onu da güncelle. Bitince sadece 'DEVİR TAMAM' yaz."
+)
+BTW_LINE_RE = re.compile(r"^\s*/btw\s+(@[\w.-]+)\s*[:\-]?\s*(.+)$", re.MULTILINE)
 
 
 # ----------------- Windows Compatibility Layer -----------------
@@ -400,17 +418,11 @@ def sync_and_migrate() -> None:
                 lcid = cfg.get("LEAD_CONVERSATION_ID", "")
                 cat = cfg.get("CREATED_AT", now)
 
-                # Dynamically check active lead conversation for Anikuro
-                if tname == "anikuro" and (BRAIN_DIR / "50b515c0-93a1-4fb7-acac-56162525fd73").exists():
-                    lcid = "50b515c0-93a1-4fb7-acac-56162525fd73"
-
                 conn.execute(
                     """
                     INSERT INTO teams (name, project_dir, session_name, lead_role, lead_cid, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
-                        project_dir=excluded.project_dir,
-                        lead_role=excluded.lead_role,
                         lead_cid=CASE WHEN teams.lead_cid = '' THEN excluded.lead_cid ELSE teams.lead_cid END
                     """,
                     (tname, pdir, sess, lrole, lcid, cat),
@@ -463,6 +475,21 @@ def sync_and_migrate() -> None:
                             ),
                         )
                 export_agents_json(conn, tname)
+
+
+def default_team() -> str:
+    """Most recently created team; replaces the old hardcoded 'anikuro' default."""
+    with get_db() as conn:
+        row = conn.execute("SELECT name FROM teams ORDER BY created_at DESC LIMIT 1").fetchone()
+    return row["name"] if row else ""
+
+
+def team_memory_files(project_dir: str) -> List[Path]:
+    """TEAM_MEMORY.md in the project root or a shared <proje>-workspace/ subfolder."""
+    pdir = Path(project_dir) if project_dir else None
+    if not pdir or not pdir.is_dir():
+        return []
+    return [f for f in [pdir / "TEAM_MEMORY.md", *sorted(pdir.glob("*-workspace/TEAM_MEMORY.md"))] if f.exists()]
 
 
 def export_agents_json(conn: sqlite3.Connection, team_name: str) -> None:
@@ -532,8 +559,9 @@ def clean_user_prompt(raw: str) -> str:
         return ""
     m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", raw, flags=re.DOTALL)
     if m:
-        return m.group(1).strip()
-    return raw.strip()
+        raw = m.group(1)
+    # hide the orchestration context block injected by build_agent_orchestration_prompt
+    return re.sub(r"^\s*\[HIVEFORGE (?:AGENT ORKESTRASYON )?BAĞLAMI\].*?\n-{10,}\n", "", raw, count=1, flags=re.DOTALL).strip()
 
 
 def summarize_tool_call(tc: Dict[str, Any]) -> Dict[str, str]:
@@ -570,7 +598,47 @@ def get_runtime_context_limit(runtime: str = "agy", model: str = "") -> int:
     return 128_000
 
 
+_SNAPSHOT_CACHE: Dict[Tuple[str, str, str, str], Tuple[Any, Dict[str, Any]]] = {}
+
+
+def _file_sig(path: Path) -> Tuple[int, int]:
+    try:
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return 0, 0
+
+
 def read_brain_snapshot(
+    cid: str,
+    task_key: str = "",
+    runtime: str = "agy",
+    team_name: str = "",
+    target: str = "",
+    model: str = "",
+) -> Dict[str, Any]:
+    """Cached wrapper: agy transcripts are multi-MB, so only re-parse when the files actually change."""
+    if runtime != "agy" or not cid:
+        return _read_brain_snapshot_uncached(cid, task_key, runtime, team_name, target, model)
+    logs = BRAIN_DIR / cid / ".system_generated" / "logs"
+    full_sig = _file_sig(logs / "transcript_full.jsonl")
+    newest = max(full_sig[0], _file_sig(logs / "transcript.jsonl")[0])
+    sig = (
+        full_sig,
+        _file_sig(logs / "transcript.jsonl"),
+        task_key in ACTIVE_PROCESSES and ACTIVE_PROCESSES[task_key].returncode is None,
+        (time.time_ns() - newest) < 180 * 10**9,  # status flips to idle 180 s after last write
+    )
+    key = (cid, task_key, runtime, model)
+    hit = _SNAPSHOT_CACHE.get(key)
+    if hit and hit[0] == sig:
+        return hit[1]
+    snap = _read_brain_snapshot_uncached(cid, task_key, runtime, team_name, target, model)
+    _SNAPSHOT_CACHE[key] = (sig, snap)
+    return snap
+
+
+def _read_brain_snapshot_uncached(
     cid: str,
     task_key: str = "",
     runtime: str = "agy",
@@ -879,10 +947,11 @@ def find_interactive_tmux_pane(cid: str = "", target: str = "") -> Optional[str]
 
         # Check by pane title matching target (e.g. "@server")
         if target:
-            target_clean = target.lower().strip()
+            # whole-tag match: "@web" must not match a pane titled "@webhook"
+            tag_re = re.compile(rf"(?<![\w@]){re.escape(target.lower().strip())}(?![\w.-])")
             for line in res.stdout.strip().splitlines():
                 parts = line.split("|")
-                if len(parts) >= 3 and target_clean in parts[2].lower():
+                if len(parts) >= 3 and tag_re.search(parts[2].lower()):
                     return parts[0].strip()
 
         # Check by CID matching agy process
@@ -936,16 +1005,25 @@ def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
     doc_lines.extend([
         "",
         "## 📡 Ajanlar Arası İletişim Kuralları",
-        "1. **Asenkron İletişim (`/btw`)**: Başka bir ajana veya tüm takıma bilgi, durum ya da istek iletmek için `/btw @hedef [mesaj]` formatını kullanın. HiveForge sistemi bu mesajları otomatik olarak ilgili ajanın bağlamına aktarır.",
-        "2. **Çakışma ve Dosya Kilitleri**: Ortak repoda başka bir ajanın değiştirdiği dosyaları ezmemek için `.locks/locks.json` dosyasını kontrol edin.",
-        "3. **Terminal ve Araçlar**: Terminal üzerinden `hive agents` veya `team agents` ile anlık takım durumunu görebilirsiniz.",
+        f"1. **Görev Dağıtımı**: `team dispatch {team_name} @hedef \"görev\"`. Görev bitince sonuç, görevi veren ajana otomatik not olarak gelir; bekleme/poll yapmayın.",
+        f"2. **Bilgi Notu (`/btw`)**: Cevapta ayrı satırda `/btw @hedef mesaj` yazın ya da `team note {team_name} @hedef \"mesaj\"` çalıştırın; HiveForge iletir.",
+        "3. **Çakışma ve Dosya Kilitleri**: Ortak repoda başka bir ajanın değiştirdiği dosyaları ezmemek için `.locks/locks.json` dosyasını kontrol edin.",
+        "4. **Hafıza**: Her ajanın kalıcı hafızası `.hive/memory/<ajan>.md`. Bağlam büyüyünce HiveForge ajana özet yazdırıp yeni oturum açar.",
         "",
-        f"*Otomatik oluşturuldu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+        "## 🪙 Token Kuralları",
+        "- Komut çıktısını sınırla (`| tail -n 40`, `grep`), derleme/testleri sessiz çalıştır, sadece hataları oku.",
+        "- Dosyayı bütün okuma: önce `grep -n` / `graphify query`, sonra ilgili satır aralığı.",
+        "- `sleep`, `tmux capture-pane`, tekrar tekrar durum sorgulama yok.",
+        "- Cevaplar kısa: değişen dosyalar, sonuç, sonraki adım.",
     ])
 
+    # Only HiveForge's own file. Never AGENTS.md: projects keep their own (often symlinked) AGENTS.md there.
+    # No timestamp + write-on-change keeps the file stable for agents' prompt caches.
+    doc = pdir / "TEAM_ORCHESTRATION.md"
+    content = "\n".join(doc_lines)
     try:
-        (pdir / "TEAM_ORCHESTRATION.md").write_text("\n".join(doc_lines), encoding="utf-8")
-        (pdir / "AGENTS.md").write_text("\n".join(doc_lines), encoding="utf-8")
+        if not doc.is_symlink() and (not doc.exists() or doc.read_text(encoding="utf-8") != content):
+            doc.write_text(content, encoding="utf-8")
     except Exception:
         pass
 
@@ -958,7 +1036,6 @@ def get_team_token_analytics(team_name: str) -> Dict[str, Any]:
     - Per-agent breakdown with share percentage and visual gauge metrics
     - Top token consumer identification
     """
-    sync_and_migrate()
     with get_db() as conn:
         team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
         if not team:
@@ -1072,34 +1149,81 @@ def get_team_token_analytics(team_name: str) -> Dict[str, Any]:
     }
 
 
-def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: str) -> str:
-    """Injects orchestration context so every agent knows its identity, teammates, and /btw protocol."""
+def agent_memory_file(team_name: str, target: str) -> Optional[Path]:
+    """Per-agent handoff memory, kept by HiveForge in <project>/.hive/memory/<agent>.md."""
+    with get_db() as conn:
+        team = conn.execute("SELECT project_dir FROM teams WHERE name = ?", (team_name,)).fetchone()
+    if not team or not team["project_dir"]:
+        return None
+    return Path(team["project_dir"]) / ".hive" / "memory" / f"{target.lstrip('@') or 'agent'}.md"
+
+
+def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: str, first_turn: bool = True) -> str:
+    """
+    Injects orchestration context. Full rules only on a session's first turn: every turn's prefix stays in the
+    conversation, so repeating a long block each turn would itself grow the context. Later turns get a short reminder.
+    """
     try:
         with get_db() as conn:
             team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
             if not team:
                 return user_prompt
             agents = conn.execute("SELECT target, name, role, runtime FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)).fetchall()
+        mem = agent_memory_file(team_name, target)
+        is_lead = target == "@lead"
+        lead_rule = (
+            f"• LİDER KURALI: Görevin dağıtmak, denetlemek, deploy etmek ve kullanıcıyla iletişim. Kod yazma, dosya düzenleme, "
+            f"derleme/test, ssh/curl ile hata ayıklama gibi uygulama işlerini KENDİN YAPMA; `team dispatch {team_name} @hedef \"görev\"` "
+            f"ile ilgili ajana ver. Deploy SENİN işin: çakışma olmasın diye ilgili ajanlar bitirip onay verdikten sonra sırayla sen yaparsın.\n"
+        )
+
+        if not first_turn:
+            ctx_prefix = "[HIVEFORGE BAĞLAMI] " + (lead_rule.lstrip("• ") if is_lead else "")
+            ctx_prefix += "Token kuralları geçerli: kısa çıktı, hedefli okuma, bekleme/poll yok.\n"
+            return ctx_prefix + "--------------------------------------------------\n" + user_prompt
 
         teammates = []
-        if target != "@lead":
+        if not is_lead:
             teammates.append(f"@lead (Tech Lead: {team['lead_role']})")
         for ag in agents:
             if ag["target"] != target:
                 teammates.append(f"{ag['target']} ({ag['name']}: {ag['role']})")
-
         teammates_str = ", ".join(teammates) if teammates else "Yok (Tekil Çalışma)"
+        mem_str = str(mem) if mem else "(proje dizini tanımsız)"
 
         ctx_prefix = (
             f"[HIVEFORGE AGENT ORKESTRASYON BAĞLAMI]\n"
             f"• Takım: {team_name} | Senin Rolün: {target} | Takım Arkadaşların: {teammates_str}\n"
-            f"• İletişim: Diğer ajanlara bilgi iletmek için cevabında veya notlarında `/btw @hedef [mesaj]` formatını kullan.\n"
-            f"• Dosya Kilitleri: Çakışmaları engellemek için ortak depodaki dosya kilitlerine (.locks/) dikkat et.\n"
-            f"--------------------------------------------------\n"
+            f"• İletişim: Kısa bilgi notu için cevabına ayrı satırda `/btw @hedef mesaj` yaz (HiveForge iletir) "
+            f"veya `team note {team_name} @hedef \"mesaj\"` çalıştır.\n"
+            f"• Hafıza: {mem_str} senin kalıcı hafızan. Varsa İLK İŞ onu oku. Önemli bir karar/aşama bitince kısaca güncelle "
+            f"(projenin kendi hafıza protokolü varsa ona da uy). Bağlamın büyüyünce HiveForge seni yeni oturuma taşır; "
+            f"tek köprü bu dosyadır.\n"
+            f"• TOKEN KURALLARI (her adımda tüm bağlam yeniden okunur, israf çarpılarak büyür):\n"
+            f"  1. Komut çıktısını sınırla: uzun çıktılara `| tail -n 40`, `| head`, `grep` ekle; derleme/testleri sessiz çalıştır, "
+            f"sadece hataları oku (ör. `cargo check -q 2>&1 | tail -n 30`).\n"
+            f"  2. Dosyayı bütün okuma: önce `grep -n` / `graphify query` ile yeri bul, sonra sadece ilgili satır aralığını oku; "
+            f"aynı dosyayı tekrar tekrar okuma.\n"
+            f"  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar tekrar `team agents` yok. `team dispatch` ile verdiğin "
+            f"görev bitince sonucu HiveForge sana otomatik not olarak getirir; turunu bitir.\n"
+            f"  4. Cevabı kısa tut: değişen dosyalar, sonuç, sonraki adım. Uzun rapor/tablo yazma.\n"
+            f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
         )
+        if is_lead:
+            ctx_prefix += lead_rule
+        ctx_prefix += "--------------------------------------------------\n"
         return ctx_prefix + user_prompt
     except Exception:
         return user_prompt
+
+
+def _save_agent_cid(team_name: str, target: str, is_lead: bool, cid: str) -> None:
+    with get_db() as conn:
+        if is_lead:
+            conn.execute("UPDATE teams SET lead_cid = ? WHERE name = ?", (cid, team_name))
+        else:
+            conn.execute("UPDATE agents SET cid = ? WHERE team_name = ? AND target = ?", (cid, team_name, target))
+            export_agents_json(conn, team_name)
 
 
 async def execute_headless_agent_turn(
@@ -1130,7 +1254,7 @@ async def execute_headless_agent_turn(
 
     # Sync orchestration documents & inject team awareness into prompt
     sync_team_orchestration_doc(team_name, wdir)
-    effective_prompt = build_agent_orchestration_prompt(team_name, target, prompt)
+    effective_prompt = build_agent_orchestration_prompt(team_name, target, prompt, first_turn=not cid)
 
     cmd: List[str] = []
     before_cids = set()
@@ -1151,6 +1275,12 @@ async def execute_headless_agent_turn(
         cmd = ["claude", "--dangerously-skip-permissions"]
         if effort in ("low", "medium", "high"):
             cmd.extend(["--effort", effort])
+        # Keep one Claude session per agent so it remembers earlier turns (cid is saved after the first successful turn)
+        if cid:
+            cmd.extend(["--resume", cid])
+        else:
+            new_claude_sid = str(uuid.uuid4())
+            cmd.extend(["--session-id", new_claude_sid])
         cmd.extend(["-p", effective_prompt])
 
     elif runtime == "codex":
@@ -1172,7 +1302,7 @@ async def execute_headless_agent_turn(
 
     else:
         # Custom runtime command template
-        cmd = ["bash", "-c", f"{runtime} '{effective_prompt}'"]
+        cmd = ["bash", "-c", f'{runtime} "$1"', "hive", effective_prompt]
         if IS_WINDOWS:
             git_bash = _windows_git_bash()
             if git_bash:
@@ -1191,6 +1321,8 @@ async def execute_headless_agent_turn(
         cwd=wdir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=not IS_WINDOWS,  # own process group, so a timeout can kill the agent's child shells too
+        env={**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target},
     )
     ACTIVE_PROCESSES[task_key] = proc
     ACTIVE_TASKS_META[task_key] = {
@@ -1211,22 +1343,32 @@ async def execute_headless_agent_turn(
                 if diff:
                     newest = max(diff, key=lambda name: (BRAIN_DIR / name).stat().st_mtime)
                     detected_cid = newest
-                    with get_db() as conn:
-                        if is_lead:
-                            conn.execute("UPDATE teams SET lead_cid = ? WHERE name = ?", (detected_cid, team_name))
-                        else:
-                            conn.execute("UPDATE agents SET cid = ? WHERE team_name = ? AND target = ?", (detected_cid, team_name, target))
-                            export_agents_json(conn, team_name)
+                    _save_agent_cid(team_name, target, is_lead, detected_cid)
                     break
             if proc.returncode is not None:
                 break
 
     try:
-        stdout_b, stderr_b = await proc.communicate()
+        timed_out = False
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=TURN_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            timed_out = True
+            if IS_WINDOWS:
+                proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+            stdout_b, stderr_b = await proc.communicate()
         stdout = stdout_b.decode("utf-8", errors="ignore").strip()
         stderr = stderr_b.decode("utf-8", errors="ignore").strip()
-        ok = proc.returncode == 0
+        if timed_out:
+            stderr = f"Hata: tur {int(TURN_TIMEOUT_SEC)} sn içinde bitmedi, süreç durduruldu.\n{stderr}".strip()
+        ok = proc.returncode == 0 and not timed_out
         output_txt = stdout or stderr
+
+        if runtime == "claude" and not cid and ok:
+            detected_cid = new_claude_sid
+            _save_agent_cid(team_name, target, is_lead, detected_cid)
 
         # For non-agy runtimes: store turn in SQLite agent_turns table
         if runtime != "agy":
@@ -1256,9 +1398,9 @@ async def dispatch_message(
     sender: str = "User",
     msg_type: str = "dispatch",
     tool_id: Optional[str] = None,
+    hops: int = 0,
 ) -> Dict[str, Any]:
     """Central dispatcher supporting agy, claude, aider, ollama, and custom runtimes."""
-    sync_and_migrate()
     with get_db() as conn:
         team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
         if not team:
@@ -1344,6 +1486,8 @@ async def dispatch_message(
 
         for idx, ag in enumerate(targets_to_run):
             ag_target = ag["target"]
+            if msg_type == "note" and ag_target == sender:
+                continue  # @all note: don't wake the sender with its own message
             ag_cid = ag.get("cid", "")
             ag_runtime = ag.get("runtime", "agy") or "agy"
             ag_model = ag.get("model", "") or ""
@@ -1352,7 +1496,7 @@ async def dispatch_message(
 
             final_prompt = enriched_message
             if msg_type == "note":
-                final_prompt = f"/btw [{sender}]: {enriched_message}"
+                final_prompt = f"[BTW NOTU — {sender}]: {enriched_message}"
             elif skills and not ag_cid and ag_runtime == "agy":
                 skill_str = ", ".join(skills)
                 final_prompt = (
@@ -1360,16 +1504,15 @@ async def dispatch_message(
                     f"{enriched_message}"
                 )
 
-            conn.execute(
+            # Check if an interactive tmux pane is running
+            interactive_pane = find_interactive_tmux_pane(cid=ag_cid, target=ag_target)
+            queue_id = conn.execute(
                 """
                 INSERT INTO dispatch_queue (team_name, target, sender, msg_type, message, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (team_name, ag_target, sender, msg_type, final_prompt, "running", now),
-            )
-
-            # Check if an interactive tmux pane is running
-            interactive_pane = find_interactive_tmux_pane(cid=ag_cid, target=ag_target)
+                (team_name, ag_target, sender, msg_type, final_prompt, "sent" if interactive_pane else "queued", now),
+            ).lastrowid
             if interactive_pane:
                 subprocess.run(["tmux", "send-keys", "-t", interactive_pane, "-l", final_prompt], check=False)
                 subprocess.run(["tmux", "send-keys", "-t", interactive_pane, "C-m"], check=False)
@@ -1390,6 +1533,10 @@ async def dispatch_message(
                         ag.get("mode", "auto"),
                         final_prompt,
                         bool(ag.get("is_lead")),
+                        hops,
+                        queue_id,
+                        sender,
+                        msg_type,
                     )
                 )
                 dispatched_names.append(f"{ag['name']} ({ag_runtime.upper()} Headless)")
@@ -1414,12 +1561,85 @@ async def _delayed_headless_launch(
     mode: str,
     prompt: str,
     is_lead: bool,
+    hops: int = 0,
+    queue_id: Optional[int] = None,
+    sender: str = "",
+    msg_type: str = "dispatch",
 ) -> None:
     if delay > 0:
         await asyncio.sleep(delay)
-    await execute_headless_agent_turn(
-        team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, prompt, is_lead
+    lock = AGENT_LOCKS.setdefault(f"{team_name}:{target}", asyncio.Lock())
+    ok, output = False, ""
+    async with lock:
+        _set_queue_status(queue_id, "running")
+        # cid may have been detected by the previous queued turn
+        if not cid:
+            with get_db() as conn:
+                row = (conn.execute("SELECT lead_cid AS cid FROM teams WHERE name = ?", (team_name,)) if is_lead else
+                       conn.execute("SELECT cid FROM agents WHERE team_name = ? AND target = ?", (team_name, target))).fetchone()
+                cid = (row["cid"] if row else "") or ""
+        cid = await _rotate_session_if_large(team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, is_lead)
+        try:
+            ok, _, output = await execute_headless_agent_turn(
+                team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, prompt, is_lead
+            )
+        except Exception as e:
+            output = f"Hata: {e}"
+        finally:
+            _set_queue_status(queue_id, "done" if ok else "error", output)
+    if ok and hops < BTW_MAX_HOPS:
+        await route_btw_notes(team_name, target, output, hops + 1)
+    # Result callback: an agent that dispatched this task gets the outcome pushed back, so it never needs to poll.
+    if msg_type == "dispatch" and sender.startswith("@") and sender != target and hops < BTW_MAX_HOPS:
+        status = "TAMAMLANDI" if ok else "HATA"
+        await dispatch_message(
+            team_name, sender, f"[GÖREV SONUCU — {target} • {status}]\n{(output or '').strip()[-1500:]}",
+            sender=target, msg_type="note", hops=hops + 1,
+        )
+
+
+async def _rotate_session_if_large(
+    team_name: str, target: str, runtime: str, model: str, cid: str,
+    workspace_dir: str, persona: str, effort: str, mode: str, is_lead: bool,
+) -> str:
+    """Returns the cid to use: unchanged, or "" after a successful handoff into a fresh session."""
+    if not cid or ROTATE_TOKENS <= 0:
+        return cid
+    snap = read_brain_snapshot(cid, task_key=f"{team_name}:{target}", runtime=runtime, team_name=team_name, target=target, model=model)
+    ctx = snap.get("telemetry", {}).get("context_tokens", 0)
+    mem = agent_memory_file(team_name, target)
+    if ctx < ROTATE_TOKENS or not mem:
+        return cid
+    mem.parent.mkdir(parents=True, exist_ok=True)
+    ok, _, _ = await execute_headless_agent_turn(
+        team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode,
+        HANDOFF_PROMPT.format(ctx=ctx, mem=mem), is_lead,
     )
+    if not ok:
+        return cid  # keep the old session rather than lose context
+    _save_agent_cid(team_name, target, is_lead, "")
+    return ""
+
+
+def _set_queue_status(queue_id: Optional[int], status: str, result: str = "") -> None:
+    if queue_id is None:
+        return
+    with get_db() as conn:
+        if result:
+            conn.execute("UPDATE dispatch_queue SET status = ?, result_preview = ? WHERE id = ?", (status, result[-500:], queue_id))
+        else:
+            conn.execute("UPDATE dispatch_queue SET status = ? WHERE id = ?", (status, queue_id))
+
+
+async def route_btw_notes(team_name: str, sender: str, output: str, hops: int) -> int:
+    """Delivers `/btw @hedef mesaj` lines from an agent's reply to the target agent as notes."""
+    sent = 0
+    for to, msg in BTW_LINE_RE.findall(output or ""):
+        if to.lower() == sender.lower():
+            continue
+        res = await dispatch_message(team_name, to, msg.strip(), sender=sender, msg_type="note", hops=hops)
+        sent += bool(res.get("success"))
+    return sent
 
 
 # ----------------- Ecosystem & Tool Discovery -----------------

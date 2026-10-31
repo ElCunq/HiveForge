@@ -23,7 +23,7 @@ import engine
 HOST = "127.0.0.1"
 PORT = 4444
 # Windows'ta kullanıcı profili yazılamıyorsa engine %LOCALAPPDATA%\HiveForge'a düşer; aynı dizini kullan
-BASE_DIR = engine.BASE_DIR if os.name == "nt" else Path.home() / ".agy-teams"
+BASE_DIR = engine.BASE_DIR
 TEAMS_DIR = BASE_DIR / "teams"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -69,12 +69,7 @@ def scan_team_locks(team_name: str, project_dir: str):
 # ----------------- Project Brain & Kanban Ayrıştırıcı -----------------
 
 def extract_project_brain(project_dir: str, team_name: str):
-    candidates = []
-    if project_dir:
-        candidates.extend([
-            Path(project_dir) / "TEAM_MEMORY.md",
-            Path(project_dir) / "anikuro-workspace" / "TEAM_MEMORY.md",
-        ])
+    candidates = engine.team_memory_files(project_dir)
     candidates.append(TEAMS_DIR / team_name / "brain.json")
 
     sections = {}
@@ -102,12 +97,7 @@ def extract_project_brain(project_dir: str, team_name: str):
 
 def extract_kanban_tasks(project_dir: str, team_name: str):
     tasks = []
-    candidates = []
-    if project_dir:
-        candidates.extend([
-            Path(project_dir) / "TEAM_MEMORY.md",
-            Path(project_dir) / "anikuro-workspace" / "TEAM_MEMORY.md",
-        ])
+    candidates = engine.team_memory_files(project_dir)
     candidates.append(TEAMS_DIR / team_name / "tasks.json")
 
     for c in candidates:
@@ -141,7 +131,6 @@ def extract_kanban_tasks(project_dir: str, team_name: str):
 
 
 def get_team_agents(team_name: str):
-    engine.sync_and_migrate()
     with engine.get_db() as conn:
         rows = conn.execute(
             "SELECT * FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)
@@ -197,7 +186,6 @@ async def handle_logo(request):
 
 
 async def api_list_teams(request):
-    engine.sync_and_migrate()
     teams = []
     with engine.get_db() as conn:
         rows = conn.execute("SELECT * FROM teams ORDER BY name ASC").fetchall()
@@ -217,7 +205,6 @@ async def api_list_teams(request):
 
 async def api_get_team_info(request):
     team_name = request.match_info.get("name")
-    engine.sync_and_migrate()
     with engine.get_db() as conn:
         team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
         if not team:
@@ -395,7 +382,7 @@ async def api_run_tool(request):
     except Exception:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
-    team = data.get("team", "anikuro")
+    team = data.get("team") or engine.default_team()
     target = data.get("target", "@lead")
     tool_id = data.get("tool_id")
     prompt = data.get("prompt", "__TOOL_ONLY__")
@@ -673,7 +660,7 @@ async def api_dispatch(request):
         team_name=team,
         target=target,
         message=message,
-        sender="User",
+        sender=data.get("sender") or "User",
         msg_type="dispatch",
         tool_id=tool_id,
     )
@@ -692,8 +679,7 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    team_name = request.query.get("team", "anikuro")
-    engine.sync_and_migrate()
+    team_name = request.query.get("team") or engine.default_team()
 
     last_hashes = {}
 
@@ -722,7 +708,7 @@ async def websocket_handler(request):
                     model=ag.get("model", ""),
                 )
 
-                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens',0)}|{snap['telemetry'].get('cum_total_tokens',0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}"
+                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens',0)}|{snap['telemetry'].get('cum_total_tokens',0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}|{ag['runtime']}|{ag['model']}"
                 if last_hashes.get(card_id) != state_sig:
                     last_hashes[card_id] = state_sig
                     await ws.send_json({
@@ -733,6 +719,8 @@ async def websocket_handler(request):
                         "name": ag["name"],
                         "role": ag["role"],
                         "target": ag["target"],
+                        "runtime": ag["runtime"],
+                        "model": ag["model"],
                         "cid": ag["cid"],
                         "full_cid": cid,
                         "persona": ag["persona"],
@@ -756,11 +744,12 @@ async def websocket_handler(request):
                 team_name=team_name,
                 target="@lead",
             )
-            lead_sig = f"{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens',0)}|{lead_snap['telemetry'].get('cum_total_tokens',0)}"
+            lead_sig = f"{team['lead_runtime']}|{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens',0)}|{lead_snap['telemetry'].get('cum_total_tokens',0)}"
             if last_hashes.get("lead") != lead_sig:
                 last_hashes["lead"] = lead_sig
                 await ws.send_json({
                     "type": "lead_snapshot",
+                    "runtime": team["lead_runtime"] or "agy",
                     "cid": lead_cid[:8] if lead_cid else "lead",
                     "full_cid": lead_cid,
                     "status": lead_snap["status"],
@@ -790,9 +779,28 @@ async def websocket_handler(request):
     return ws
 
 
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost"}
+
+
+@web.middleware
+async def local_only_middleware(request, handler):
+    """Blocks cross-site requests (CSRF / DNS rebinding): agents run with full shell access."""
+    from urllib.parse import urlsplit
+    host = request.host or ""
+    if urlsplit(f"//{host}").hostname not in LOCAL_HOSTNAMES:
+        return web.json_response({"success": False, "error": "Forbidden host"}, status=403)
+    origin = request.headers.get("Origin")
+    if origin is not None and urlsplit(origin).netloc != host:
+        return web.json_response({"success": False, "error": "Forbidden origin"}, status=403)
+    return await handler(request)
+
+
 def create_app():
     engine.sync_and_migrate()
-    app = web.Application()
+    with engine.get_db() as conn:
+        # turns started by a previous server process can no longer be tracked
+        conn.execute("UPDATE dispatch_queue SET status = 'stale' WHERE status IN ('queued', 'running')")
+    app = web.Application(middlewares=[local_only_middleware])
     app.router.add_get("/", handle_index)
     app.router.add_get("/favicon.ico", handle_favicon)
     app.router.add_get("/favicon.svg", handle_favicon)
