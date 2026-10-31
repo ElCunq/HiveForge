@@ -79,6 +79,9 @@ TURN_TIMEOUT_SEC = float(os.environ.get("HIVE_TURN_TIMEOUT", 3600))
 # Every step re-reads the whole context, so a 190k session costs ~190k tokens per step. Above this size the agent
 # writes a handoff memory and continues in a fresh session. 0 disables.
 ROTATE_TOKENS = int(os.environ.get("HIVE_ROTATE_TOKENS", 100_000))
+# Runaway guard: an agy turn that takes more steps than this is stopped. 0 disables.
+MAX_TURN_STEPS = int(os.environ.get("HIVE_MAX_STEPS", 600))
+STEP_POLL_SEC = 10.0
 HANDOFF_PROMPT = (
     "[HIVEFORGE OTURUM DEVRİ] Bağlamın {ctx:,} tokene ulaştı; bir sonraki görevden önce yeni bir oturuma geçeceksin. "
     "Şimdi kod değiştirme. Sadece {mem} dosyasını (yoksa oluştur) şu başlıklarla güncelle, en fazla ~1500 kelime: "
@@ -313,6 +316,9 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE agent_turns ADD COLUMN output_tokens INTEGER DEFAULT 0;")
         if "total_tokens" not in turn_cols:
             cursor.execute("ALTER TABLE agent_turns ADD COLUMN total_tokens INTEGER DEFAULT 0;")
+
+        if "daily_token_budget" not in team_cols:
+            cursor.execute("ALTER TABLE teams ADD COLUMN daily_token_budget INTEGER DEFAULT 0;")
 
         cursor.execute("PRAGMA table_info(dispatch_queue);")
         queue_cols = [c[1] for c in cursor.fetchall()]
@@ -1185,6 +1191,8 @@ def get_team_token_analytics(team_name: str) -> Dict[str, Any]:
         "cache_hit_pct": cache_hit_pct,
         "top_consumer": top_consumer,
         "agents": sorted_members,
+        "daily_budget": get_daily_budget(team_name),
+        "today_by_agent": tokens_today(team_name),
     }
 
 
@@ -1356,6 +1364,40 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
     add_inbox(team_name, requested_by, f"Deploy #{dep_id} {verdict}: {cmd_str}" + (f"\n" + "\n".join(tail[-8:]) if code else ""))
     print(f"[HiveForge] Deploy #{dep_id}: {verdict}")
     return code
+
+
+def get_daily_budget(team_name: str) -> int:
+    with get_db() as conn:
+        row = conn.execute("SELECT daily_token_budget FROM teams WHERE name = ?", (team_name,)).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def set_daily_budget(team_name: str, tokens: int) -> bool:
+    with get_db() as conn:
+        return conn.execute("UPDATE teams SET daily_token_budget = ? WHERE name = ?", (max(0, tokens), team_name)).rowcount > 0
+
+
+def tokens_today(team_name: str, target: Optional[str] = None) -> Dict[str, int]:
+    """Tokens spent today per agent, from the per-turn cost recorded in the ledger (tasks and notes)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    sql = "SELECT target, SUM(tokens) FROM dispatch_queue WHERE team_name = ? AND created_at LIKE ?"
+    args: List[Any] = [team_name, f"{today}%"]
+    if target:
+        sql += " AND target = ?"
+        args.append(target)
+    with get_db() as conn:
+        return {r[0]: int(r[1] or 0) for r in conn.execute(sql + " GROUP BY target", args)}
+
+
+def _budget_alert(team_name: str, target: str, before: int, after: int) -> None:
+    budget = get_daily_budget(team_name)
+    if budget <= 0:
+        return
+    for pct in (100, 80):
+        line = budget * pct // 100
+        if before < line <= after:
+            add_inbox(team_name, "HiveForge", f"{target} günlük token bütçesinin %{pct}'ine ulaştı: {after:,} / {budget:,}.")
+            return
 
 
 def lock_files(team_name: str, agent: str, paths: List[str]) -> Dict[str, Any]:
@@ -1542,6 +1584,7 @@ async def execute_headless_agent_turn(
     if not shutil.which(bin_name):
         return False, cid, f"Hata: '{bin_name}' CLI komutu bu sistemde kurulu değil."
 
+    start_steps = read_brain_snapshot(cid, task_key=task_key, runtime=runtime)["telemetry"].get("steps", 0) if (cid and runtime == "agy") else 0
     proc = await asyncio.create_subprocess_exec(
         *resolve_cli_command(cmd),
         cwd=wdir,
@@ -1575,21 +1618,31 @@ async def execute_headless_agent_turn(
                 break
 
     try:
-        timed_out = False
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=TURN_TIMEOUT_SEC)
-        except asyncio.TimeoutError:
-            timed_out = True
+        stop_reason = ""
+        comm = asyncio.ensure_future(proc.communicate())
+        deadline = time.time() + TURN_TIMEOUT_SEC
+        while not stop_reason:
+            done, _ = await asyncio.wait({comm}, timeout=max(0.05, min(STEP_POLL_SEC, deadline - time.time())))
+            if done:
+                break
+            if time.time() >= deadline:
+                stop_reason = f"tur {int(TURN_TIMEOUT_SEC)} sn içinde bitmedi"
+            elif MAX_TURN_STEPS and runtime == "agy" and detected_cid:
+                steps = read_brain_snapshot(detected_cid, task_key=task_key, runtime=runtime)["telemetry"].get("steps", 0)
+                if steps - start_steps > MAX_TURN_STEPS:
+                    stop_reason = f"tur {MAX_TURN_STEPS} adım sınırını aştı (HIVE_MAX_STEPS)"
+        if stop_reason:
             if IS_WINDOWS:
                 proc.kill()
             else:
                 os.killpg(proc.pid, signal.SIGKILL)
-            stdout_b, stderr_b = await proc.communicate()
+        stdout_b, stderr_b = await comm
         stdout = stdout_b.decode("utf-8", errors="ignore").strip()
         stderr = stderr_b.decode("utf-8", errors="ignore").strip()
-        if timed_out:
-            stderr = f"Hata: tur {int(TURN_TIMEOUT_SEC)} sn içinde bitmedi, süreç durduruldu.\n{stderr}".strip()
-        ok = proc.returncode == 0 and not timed_out
+        if stop_reason:
+            stderr = f"Hata: {stop_reason}, süreç durduruldu.\n{stderr}".strip()
+            add_inbox(team_name, "HiveForge", f"{target} durduruldu: {stop_reason}.")
+        ok = proc.returncode == 0 and not stop_reason
         output_txt = stdout or stderr
 
         if runtime == "claude" and not cid and ok:
@@ -1707,6 +1760,16 @@ async def dispatch_message(
         if not targets_to_run:
             return {"success": False, "error": f"Hedef ajan bulunamadı: {target}"}
 
+        budget = get_daily_budget(team_name)
+        budget_warning = ""
+        if budget > 0:
+            spent_today = tokens_today(team_name)
+            over = [ag["target"] for ag in targets_to_run if spent_today.get(ag["target"], 0) >= budget]
+            if over and sender.startswith("@"):
+                return {"success": False, "error": f"Günlük token bütçesi doldu: {', '.join(over)} ({budget:,}). Kullanıcı onayı gerekir (team ask-user)."}
+            if over:
+                budget_warning = f" UYARI: bütçe aşıldı ({', '.join(over)})."
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         dispatched_names = []
         task_ids: List[int] = []
@@ -1773,7 +1836,7 @@ async def dispatch_message(
             "success": True,
             "dispatched": dispatched_names,
             "task_ids": task_ids,
-            "output": f"Görev iletildi -> {', '.join(dispatched_names)}",
+            "output": f"Görev iletildi -> {', '.join(dispatched_names)}{budget_warning}",
         }
 
 
@@ -1818,7 +1881,9 @@ async def _delayed_headless_launch(
             spent = _cum_tokens(team_name, target, runtime, model, start_cid) - start_tokens if start_cid else 0
             if end_cid and end_cid != start_cid:
                 spent += _cum_tokens(team_name, target, runtime, model, end_cid)
+            before_today = tokens_today(team_name, target).get(target, 0)
             _set_queue_status(queue_id, "done" if ok else "error", output, tokens=max(0, spent))
+            _budget_alert(team_name, target, before_today, before_today + max(0, spent))
             if msg_type == "dispatch":
                 unlock_files(team_name, target)  # task over: its locks must not outlive it
     if ok and hops < BTW_MAX_HOPS:
