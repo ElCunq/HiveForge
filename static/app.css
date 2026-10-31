@@ -1446,3 +1446,11 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+
+.batch-dots { display: flex; align-items: center; gap: 5px; padding: 0 8px; }
+.batch-dot { width: 10px; height: 10px; border-radius: 50%; background: #4b5563; opacity: .45; transition: background .3s, opacity .3s, box-shadow .3s; }
+.batch-dot.running { background: #facc15; opacity: 1; box-shadow: 0 0 6px #facc15aa; animation: batch-pulse 1.4s ease-in-out infinite; }
+.batch-dot.done { background: #22c55e; opacity: 1; box-shadow: 0 0 6px #22c55e88; }
+.batch-dot.error { background: #ef4444; opacity: 1; }
+@keyframes batch-pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .batch-dot.running { animation: none; } }

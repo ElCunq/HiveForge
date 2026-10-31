@@ -13,7 +13,7 @@ running, peaks = Counter(), Counter()
 async def fake_turn(team, target, *a):
     running[target] += 1; peaks[target] = max(peaks[target], running[target])
     await asyncio.sleep(0.1); running[target] -= 1
-    return (a[-2] != "boom"), "x", "çıktı\n/btw @lead bitti"
+    return (a[-3] != "boom"), "x", "çıktı\n/btw @lead bitti"
 engine.execute_headless_agent_turn = fake_turn
 async def main():
     for m in ("bir", "iki", "boom"):

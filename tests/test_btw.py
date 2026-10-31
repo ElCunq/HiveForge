@@ -21,6 +21,6 @@ assert calls[0] == ("@lead", "Testler yeşil, deploy hazır.", "@server", 1)
 assert calls[1][:2] == ("@web", "endpoint değişti")
 
 p = engine.build_agent_orchestration_prompt("anikuro", "@lead", "x")
-assert "KENDİN YAPMA" in p and "team dispatch anikuro" in p and "Deploy SENİN" in p, p
+assert "KENDİN YAPMA" in p and "team dispatch anikuro" in p and "team deploy anikuro" in p, p
 assert "LİDER" not in engine.build_agent_orchestration_prompt("anikuro", "@server", "x")
 print("OK")

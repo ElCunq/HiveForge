@@ -354,12 +354,17 @@ def cmd_remove_agent(args):
     return 0 if res.get("success") else 1
 
 
+def _next_hop():
+    """Conversation depth of a message sent from inside an agent turn (HiveForge caps agent talk at 1 question + 1 answer)."""
+    return int(os.environ.get("HIVE_HOPS") or 0) + 1 if os.environ.get("HIVE_AGENT") else 0
+
+
 def cmd_dispatch(args):
     if len(args) < 3:
         print("Kullanım: team dispatch <takım> <@hedef> <mesaj>")
         return 1
     ensure_server_running()
-    res = api_post("/api/dispatch", {"team": args[0], "target": args[1], "message": " ".join(args[2:]), "sender": os.environ.get("HIVE_AGENT", "CLI")})
+    res = api_post("/api/dispatch", {"team": args[0], "target": args[1], "message": " ".join(args[2:]), "sender": os.environ.get("HIVE_AGENT", "CLI"), "hops": _next_hop()})
     if res.get("success"):
         ids = ", ".join(f"#{i}" for i in res.get("task_ids") or [])
         print(f"[OK] Görev {ids} {args[1]} hedefine iletildi. Bitince sonuç bildirimi gelir; bekleme yapma.")
@@ -519,7 +524,7 @@ def cmd_note(args):
         return 1
     flags, rest = _parse_flags(args[2:], {"--from": "sender"})
     ensure_server_running()
-    res = api_post("/api/note", {"team": args[0], "target": args[1], "note": " ".join(rest), "sender": flags.get("sender", os.environ.get("HIVE_AGENT", "Tech Lead (CLI)"))})
+    res = api_post("/api/note", {"team": args[0], "target": args[1], "note": " ".join(rest), "sender": flags.get("sender", os.environ.get("HIVE_AGENT", "Tech Lead (CLI)")), "hops": _next_hop()})
     print(f"[OK] /btw notu {args[1]} hedefine iletildi." if res.get("success") else f"[HATA] {res.get('error')}")
     return 0 if res.get("success") else 1
 

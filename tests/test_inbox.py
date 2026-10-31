@@ -12,7 +12,7 @@ with engine.get_db() as c:
 engine.find_interactive_tmux_pane = lambda **k: None
 engine.ROTATE_TOKENS = 0
 calls = []
-async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead):
+async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead, hops=0):
     calls.append((target, prompt)); return True, cid, "ok"
 engine.execute_headless_agent_turn = fake_turn
 

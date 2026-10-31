@@ -14,7 +14,7 @@ engine.ROTATE_TOKENS = 0
 spent = {"acid": 1000, "leadcid": 0}
 engine._cum_tokens = lambda team, target, runtime, model, cid: spent.get(cid, 0)
 calls = []
-async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead):
+async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead, hops=0):
     calls.append((target, prompt))
     spent[cid] = spent.get(cid, 0) + (4200 if target == "@a" else 10)
     return True, cid, f"{target} bitti"
@@ -27,7 +27,7 @@ async def main():
     [t] = [x for x in engine.list_tasks("t") if x["id"] == tid]
     assert t["status"] == "done" and t["tokens"] == 4200 and t["title"] == "Görev: Arama sayfasını düzelt", t
     lead_prompt = [p for who, p in calls if who == "@lead"][0]
-    assert f"[GÖREV SONUCU #{tid} — @a • TAMAMLANDI]" in lead_prompt and f"team review t {tid} onay" in lead_prompt
+    assert f"#{tid} @a ✓: @a bitti" in lead_prompt and "team review t <id> onay" in lead_prompt
 
     # reject with note -> status rejected + fix task goes back to @a, its result comes back to the reviewer
     calls.clear()

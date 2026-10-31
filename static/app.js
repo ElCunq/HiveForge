@@ -1496,6 +1496,11 @@
         return;
       }
 
+      if (msg.type === 'batch_snapshot') {
+        renderBatchDots(msg);
+        return;
+      }
+
       if (msg.type === 'inbox_snapshot') {
         inboxItems = msg.items || [];
         notifyNewInbox(inboxItems);
@@ -1900,3 +1905,17 @@
       initWebSocket();
       resetCanvasView();
     });
+
+// One dot per worker for the latest lead batch: grey = not in batch, yellow = working, green = done, red = error.
+function renderBatchDots({ workers = [], agents = {} }) {
+  const box = document.getElementById('batchDots');
+  if (!box) return;
+  const label = { running: 'çalışıyor', done: 'bitti', error: 'hata' };
+  box.replaceChildren(...workers.map((t) => {
+    const dot = document.createElement('span');
+    const st = agents[t] || 'idle';
+    dot.className = `batch-dot ${st}`;
+    dot.title = `${t}: ${label[st] || 'boşta'}`;
+    return dot;
+  }));
+}

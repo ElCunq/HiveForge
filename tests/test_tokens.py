@@ -12,7 +12,7 @@ engine.find_interactive_tmux_pane = lambda **k: None
 CTX = {"bigcid": 150_000, "leadcid": 50_000}
 engine.read_brain_snapshot = lambda cid, **k: {"telemetry": {"context_tokens": CTX.get(cid, 0)}}
 calls, handoff_ok = [], [True]
-async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead):
+async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead, hops=0):
     calls.append((target, cid, prompt))
     if "OTURUM DEVRİ" in prompt:
         return handoff_ok[0], cid, "DEVİR TAMAM"
@@ -31,7 +31,7 @@ async def main():
     assert a_calls[1][1] == "" and a_calls[1][2] == "endpoint ekle", a_calls[1]
     assert db_cid("@a") == ""
     lead_calls = [c for c in calls if c[0] == "@lead"]
-    assert lead_calls and "[GÖREV SONUCU #1 — @a • TAMAMLANDI]" in lead_calls[0][2] and "@a işi bitirdi" in lead_calls[0][2], lead_calls
+    assert lead_calls and "[GÖREVLER BİTTİ • parti 1] 1/1 tamam." in lead_calls[0][2] and "@a işi bitirdi" in lead_calls[0][2], lead_calls
     assert lead_calls[0][1] == "leadcid", "50k lead rotate edilmemeli"
     assert len([c for c in calls if c[0] == "@lead"]) == 1, "sonuç bildirimi geri bildirim döngüsü yaratmamalı"
     # 2) failed handoff keeps the old session

@@ -500,6 +500,7 @@ async def api_send_note(request):
         message=note,
         sender=sender,
         msg_type="note",
+        hops=int(data.get("hops") or 0),
     )
     return web.json_response({**res, "sender": sender, "target": target, "note": note})
 
@@ -712,6 +713,7 @@ async def api_dispatch(request):
         sender=data.get("sender") or "User",
         msg_type="dispatch",
         tool_id=tool_id,
+        hops=int(data.get("hops") or 0),
     )
     return web.json_response(res)
 
@@ -820,6 +822,13 @@ async def websocket_handler(request):
             if last_hashes.get("locks") != locks_sig:
                 last_hashes["locks"] = locks_sig
                 await ws.send_json({"type": "locks_snapshot", "locks": locks})
+
+            batch = engine.batch_status(team_name)
+            batch["workers"] = [ag["target"] for ag in current_agents]
+            batch_sig = json.dumps(batch, sort_keys=True)
+            if last_hashes.get("batch") != batch_sig:
+                last_hashes["batch"] = batch_sig
+                await ws.send_json({"type": "batch_snapshot", **batch})
 
             inbox = engine.list_inbox(team_name)
             inbox_sig = "|".join(f"{i['id']}:{i['status']}" for i in inbox)

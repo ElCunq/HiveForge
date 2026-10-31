@@ -72,8 +72,8 @@ ACTIVE_PROCESSES: Dict[str, asyncio.subprocess.Process] = {}
 ACTIVE_TASKS_META: Dict[str, Dict[str, Any]] = {}
 # One turn at a time per agent: two `agy --conversation <cid>` runs on the same conversation corrupt each other.
 AGENT_LOCKS: Dict[str, asyncio.Lock] = {}
-# Max agent->agent /btw hops before routing stops (prevents endless ping-pong between agents).
-BTW_MAX_HOPS = 3
+# Agent<->agent talk is one question + one answer: hop 1 = question, hop 2 = answer, anything deeper is dropped.
+BTW_MAX_HOPS = 2
 # A hung CLI would otherwise hold the agent's lock forever and block its queue.
 TURN_TIMEOUT_SEC = float(os.environ.get("HIVE_TURN_TIMEOUT", 3600))
 # Every step re-reads the whole context, so a 190k session costs ~190k tokens per step. Above this size the agent
@@ -322,7 +322,7 @@ def init_db() -> None:
 
         cursor.execute("PRAGMA table_info(dispatch_queue);")
         queue_cols = [c[1] for c in cursor.fetchall()]
-        for col, ddl in (("review_note", "TEXT DEFAULT ''"), ("tokens", "INTEGER DEFAULT 0"), ("updated_at", "TEXT DEFAULT ''")):
+        for col, ddl in (("review_note", "TEXT DEFAULT ''"), ("tokens", "INTEGER DEFAULT 0"), ("updated_at", "TEXT DEFAULT ''"), ("batch", "INTEGER DEFAULT 0")):
             if col not in queue_cols:
                 cursor.execute(f"ALTER TABLE dispatch_queue ADD COLUMN {col} {ddl};")
 
@@ -1219,14 +1219,14 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         mem = agent_memory_file(team_name, target)
         is_lead = target == "@lead"
         lead_rule = (
-            f"• LİDER KURALI: Görevin dağıtmak, denetlemek, deploy ve kullanıcıyla iletişim. Kod yazma/düzenleme, derleme/test, "
-            f"ssh/curl ile hata ayıklamayı KENDİN YAPMA: `team dispatch {team_name} @hedef \"görev\"`. Deploy SENİN işin: "
-            f"`team review` ile onayla, sonra `team deploy {team_name} --tasks <id,...> -- <komut>`.\n"
+            f"• LİDER KURALI: Dağıt, denetle, deploy et, kullanıcıyla konuş. Kod/derleme/test/ssh/curl KENDİN YAPMA: "
+            f"`team dispatch {team_name} @hedef \"görev\"`. Görevleri tek turda dağıt, turu bitir; hepsi bitince tek "
+            f"'GÖREVLER BİTTİ' raporu gelir. Deploy: `team review` onayı, sonra `team deploy {team_name} --tasks <id,...> -- <komut>`.\n"
         )
 
         if not first_turn:
             ctx_prefix = "[HIVEFORGE BAĞLAMI] " + (lead_rule.lstrip("• ") if is_lead else "")
-            ctx_prefix += "Token kuralları geçerli: kısa çıktı, hedefli okuma, bekleme/poll yok.\n"
+            ctx_prefix += "Token kuralları geçerli: minimal çıktı (düşünce/plan/teknoloji anlatma), hedefli okuma, poll yok, teşekkür/onay notu yok.\n"
             return ctx_prefix + "--------------------------------------------------\n" + user_prompt
 
         teammates = []
@@ -1241,8 +1241,10 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         ctx_prefix = (
             f"[HIVEFORGE AGENT ORKESTRASYON BAĞLAMI]\n"
             f"• Takım: {team_name} | Senin Rolün: {target} | Takım Arkadaşların: {teammates_str}\n"
-            f"• İletişim: Kısa bilgi notu için cevabına ayrı satırda `/btw @hedef mesaj` yaz (HiveForge iletir) "
-            f"veya `team note {team_name} @hedef \"mesaj\"` çalıştır.\n"
+            f"• İletişim: Başka ajana yalnızca gerçekten gerekli bir soru/bilgi için cevabına ayrı satırda `/btw @hedef mesaj` yaz "
+            f"(veya `team note {team_name} @hedef \"mesaj\"`). Konuşma 1 soru + 1 cevaptır; cevaba cevap HiveForge tarafından "
+            f"iletilmez. Teşekkür, 'not alındı', 'tamam' gibi notlar YAZMA. Görev sonucunu lead'e not olarak yollama: "
+            f"HiveForge tüm görevler bitince lead'e tek rapor gönderir.\n"
             f"• Hafıza: {mem_str} senin kalıcı hafızan. Varsa İLK İŞ onu oku. Önemli bir karar/aşama bitince kısaca güncelle "
             f"(projenin kendi hafıza protokolü varsa ona da uy). Bağlamın büyüyünce HiveForge seni yeni oturuma taşır; "
             f"tek köprü bu dosyadır.\n"
@@ -1252,8 +1254,9 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
             f"  2. Dosyayı bütün okuma: önce `grep -n` / `graphify query` ile yeri bul, sonra sadece ilgili satır aralığını oku; "
             f"aynı dosyayı tekrar tekrar okuma.\n"
             f"  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar tekrar `team agents` yok. `team dispatch` ile verdiğin "
-            f"görev bitince sonucu HiveForge sana otomatik not olarak getirir; turunu bitir.\n"
-            f"  4. Cevabı kısa tut: değişen dosyalar, sonuç, sonraki adım. Uzun rapor/tablo yazma.\n"
+            f"görevler bitince sonuç HiveForge'dan otomatik gelir; turunu bitir.\n"
+            f"  4. MİNİMAL ÇIKTI: düşünce sürecini, planını, kullandığın teknolojileri/açıklamaları yazma; adımlar arasında "
+            f"anlatım yapma. Son cevap en fazla 3 satır: değişen dosyalar, sonuç (✓/✗), varsa engel. Rapor/tablo/özet yok.\n"
             f"• Dosya kilidi: değiştireceğin dosyaları önce `team lock {team_name} <dosya...>` ile kilitle. Başkasında kilitliyse "
             f"dokunma, sahibine `/btw` yaz. Görev turun bitince kilitlerin otomatik açılır.\n"
             f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
@@ -1273,9 +1276,9 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
 SHIMS_DIR = PROJECT_ROOT / "bin" / "shims"
 
 
-def _agent_env(team_name: str, target: str) -> Dict[str, str]:
-    """Agents know who they are (result callbacks, deploy gate) and get the deploy-gate shims first on PATH."""
-    env = {**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target}
+def _agent_env(team_name: str, target: str, hops: int = 0) -> Dict[str, str]:
+    """Agents know who they are (result callbacks, deploy gate), how deep in a conversation they are, and get the shims."""
+    env = {**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target, "HIVE_HOPS": str(hops)}
     env.pop("HIVE_DEPLOY", None)
     if not IS_WINDOWS:  # ponytail: shims are bash; Windows agents are not gated
         env["PATH"] = f"{SHIMS_DIR}{os.pathsep}{env.get('PATH', '')}"
@@ -1519,6 +1522,7 @@ async def execute_headless_agent_turn(
     mode: str,
     prompt: str,
     is_lead: bool = False,
+    hops: int = 0,
 ) -> Tuple[bool, str, str]:
     """
     Multi-CLI Subprocess Runner:
@@ -1604,7 +1608,7 @@ async def execute_headless_agent_turn(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=not IS_WINDOWS,  # own process group, so a timeout can kill the agent's child shells too
-        env=_agent_env(team_name, target),
+        env=_agent_env(team_name, target, hops),
     )
     ACTIVE_PROCESSES[task_key] = proc
     ACTIVE_TASKS_META[task_key] = {
@@ -1773,6 +1777,12 @@ async def dispatch_message(
         if not targets_to_run:
             return {"success": False, "error": f"Hedef ajan bulunamadı: {target}"}
 
+        lead_task = sender == "@lead" and msg_type == "dispatch"
+        if lead_task:
+            hops = 0  # a lead task starts a fresh unit of work, not a conversation hop
+        elif sender.startswith("@") and hops > BTW_MAX_HOPS:
+            return {"success": False, "error": "İletilmedi: ajanlar arası konuşma 1 soru + 1 cevaptır, bu konu kapandı."}
+
         budget = get_daily_budget(team_name)
         budget_warning = ""
         if budget > 0:
@@ -1786,6 +1796,14 @@ async def dispatch_message(
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         dispatched_names = []
         task_ids: List[int] = []
+
+        batch = 0
+        if lead_task:
+            last = conn.execute("SELECT MAX(batch) FROM dispatch_queue WHERE team_name = ?", (team_name,)).fetchone()[0] or 0
+            still_open = conn.execute(
+                "SELECT 1 FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status IN ('queued', 'running')", (team_name, last)
+            ).fetchone()
+            batch = last if (last and still_open) else last + 1
 
         for idx, ag in enumerate(targets_to_run):
             ag_target = ag["target"]
@@ -1811,10 +1829,11 @@ async def dispatch_message(
             interactive_pane = find_interactive_tmux_pane(cid=ag_cid, target=ag_target)
             queue_id = conn.execute(
                 """
-                INSERT INTO dispatch_queue (team_name, target, sender, msg_type, message, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO dispatch_queue (team_name, target, sender, msg_type, message, status, created_at, batch)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (team_name, ag_target, sender, msg_type, final_prompt, "sent" if interactive_pane else "queued", now),
+                (team_name, ag_target, sender, msg_type, final_prompt, "sent" if interactive_pane else "queued", now,
+                 0 if (interactive_pane or ag_target == "@lead") else batch),
             ).lastrowid
             task_ids.append(queue_id)
             if interactive_pane:
@@ -1884,7 +1903,7 @@ async def _delayed_headless_launch(
         cid = await _rotate_session_if_large(team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, is_lead)
         try:
             ok, _, output = await execute_headless_agent_turn(
-                team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, prompt, is_lead
+                team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, prompt, is_lead, hops
             )
         except Exception as e:
             output = f"Hata: {e}"
@@ -1903,8 +1922,12 @@ async def _delayed_headless_launch(
                 unlock_files(team_name, target)  # task over: its locks must not outlive it
     if ok and hops < BTW_MAX_HOPS:
         await route_btw_notes(team_name, target, output, hops + 1)
-    # Result callback: an agent that dispatched this task gets the outcome pushed back, so it never needs to poll.
-    if msg_type == "dispatch" and sender.startswith("@") and sender != target and hops < BTW_MAX_HOPS:
+    if sender == "@lead" and msg_type == "dispatch":
+        summary = _finished_batch_summary(team_name, queue_id)
+        if summary:  # one wake-up for the lead per batch, not one per task
+            await dispatch_message(team_name, "@lead", summary, sender="HiveForge", msg_type="note")
+    # Result callback for agent->agent tasks (the answer half of 1 question + 1 answer).
+    elif msg_type == "dispatch" and sender.startswith("@") and sender != target and hops < BTW_MAX_HOPS:
         status = "TAMAMLANDI" if ok else "HATA"
         await dispatch_message(
             team_name, sender,
@@ -1912,6 +1935,46 @@ async def _delayed_headless_launch(
             f"Denetle: `team review {team_name} {queue_id} onay` veya `team review {team_name} {queue_id} ret \"düzeltme notu\"`",
             sender=target, msg_type="note", hops=hops + 1,
         )
+
+
+def _finished_batch_summary(team_name: str, queue_id: Optional[int]) -> str:
+    """Once the last open task of a lead batch finishes, returns one compact report; otherwise "".
+    No await between the status write and this check, so two tasks finishing together cannot both report."""
+    with get_db() as conn:
+        row = conn.execute("SELECT batch FROM dispatch_queue WHERE id = ?", (queue_id,)).fetchone()
+        if not row or not row["batch"]:
+            return ""
+        rows = conn.execute(
+            "SELECT id, target, status, result_preview FROM dispatch_queue WHERE team_name = ? AND batch = ? ORDER BY id",
+            (team_name, row["batch"]),
+        ).fetchall()
+    if any(r["status"] in ("queued", "running") for r in rows):
+        return ""
+    lines = [f"[GÖREVLER BİTTİ • parti {row['batch']}] {sum(r['status'] == 'done' for r in rows)}/{len(rows)} tamam."]
+    for r in rows:
+        tail = " ".join((r["result_preview"] or "").split())[-200:]
+        lines.append(f"#{r['id']} {r['target']} {'✓' if r['status'] == 'done' else '✗ ' + r['status']}: {tail}")
+    lines.append(
+        f"Son durumu kontrol et: `team review {team_name} <id> onay|ret \"not\"`, gerekiyorsa yeni görev dağıt, "
+        f"bitti ise `team tell-user {team_name}` ile kısaca bildir."
+    )
+    return "\n".join(lines)
+
+
+def batch_status(team_name: str) -> Dict[str, Any]:
+    """Latest lead batch: per-agent 'running' (has open task), 'done' or 'error'. Agents outside the batch are absent."""
+    with get_db() as conn:
+        last = conn.execute("SELECT MAX(batch) FROM dispatch_queue WHERE team_name = ?", (team_name,)).fetchone()[0] or 0
+        rows = conn.execute(
+            "SELECT target, status FROM dispatch_queue WHERE team_name = ? AND batch = ? AND batch > 0", (team_name, last)
+        ).fetchall()
+    agents: Dict[str, str] = {}
+    for r in rows:
+        st = "running" if r["status"] in ("queued", "running") else ("error" if r["status"] in ("error", "stale") else "done")
+        prev = agents.get(r["target"])
+        if prev != "running" and not (prev == "error" and st == "done"):
+            agents[r["target"]] = st
+    return {"batch": last, "agents": agents}
 
 
 async def _rotate_session_if_large(
