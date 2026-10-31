@@ -41,6 +41,12 @@ async def main():
     top = engine.list_inbox("t")[0]
     assert top["status"] == "open" and "BAŞARISIZ" in top["message"], top
 
+    # provider quota errors: one open alert, not one per failed turn
+    err = 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 3h30m1s."}'
+    engine._quota_alert("t", "@lead", err); engine._quota_alert("t", "@server", err)
+    quota = [x for x in engine.list_inbox("t") if x["message"].startswith("Model kotası doldu")]
+    assert len(quota) == 1 and "3h30m1s" in quota[0]["message"], quota
+
     # CLI sends as the calling agent
     sent = {}
     hive.ensure_server_running = lambda: None
