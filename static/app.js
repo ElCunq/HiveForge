@@ -1481,6 +1481,12 @@
     }
 
     function handleStreamMessage(msg) {
+      if (msg.type === 'locks_snapshot') {
+        teamLocks = msg.locks || [];
+        refreshLocksView();
+        return;
+      }
+
       if (msg.type === 'inbox_snapshot') {
         inboxItems = msg.items || [];
         notifyNewInbox(inboxItems);
