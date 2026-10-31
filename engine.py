@@ -246,6 +246,14 @@ def init_db() -> None:
             created_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS file_locks (
+            team_name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            created_at TEXT,
+            PRIMARY KEY (team_name, path)
+        );
+
         CREATE TABLE IF NOT EXISTS inbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_name TEXT NOT NULL,
@@ -1238,6 +1246,8 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
             f"  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar tekrar `team agents` yok. `team dispatch` ile verdiğin "
             f"görev bitince sonucu HiveForge sana otomatik not olarak getirir; turunu bitir.\n"
             f"  4. Cevabı kısa tut: değişen dosyalar, sonuç, sonraki adım. Uzun rapor/tablo yazma.\n"
+            f"• Dosya kilidi: değiştireceğin dosyaları önce `team lock {team_name} <dosya...>` ile kilitle. Başkasında kilitliyse "
+            f"dokunma, sahibine `/btw` yaz. Görev turun bitince kilitlerin otomatik açılır.\n"
             f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
         )
         if is_lead:
@@ -1346,6 +1356,44 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
     add_inbox(team_name, requested_by, f"Deploy #{dep_id} {verdict}: {cmd_str}" + (f"\n" + "\n".join(tail[-8:]) if code else ""))
     print(f"[HiveForge] Deploy #{dep_id}: {verdict}")
     return code
+
+
+def lock_files(team_name: str, agent: str, paths: List[str]) -> Dict[str, Any]:
+    """All-or-nothing: either every path is locked for `agent`, or nothing is and the conflicts are returned."""
+    paths = sorted({os.path.realpath(p) for p in paths})
+    with get_db() as conn:
+        held = {
+            r["path"]: r["agent"]
+            for r in conn.execute(
+                f"SELECT path, agent FROM file_locks WHERE team_name = ? AND path IN ({','.join('?' * len(paths))})",
+                (team_name, *paths),
+            ).fetchall()
+        } if paths else {}
+        conflicts = {p: a for p, a in held.items() if a != agent}
+        if not conflicts:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_locks (team_name, path, agent, created_at) VALUES (?, ?, ?, ?)",
+                [(team_name, p, agent, now) for p in paths],
+            )
+    return {"success": not conflicts, "locked": [] if conflicts else paths, "conflicts": conflicts}
+
+
+def unlock_files(team_name: str, agent: str, paths: Optional[List[str]] = None) -> int:
+    """Releases the agent's locks (all of them when no paths are given). Other agents' locks are never touched."""
+    with get_db() as conn:
+        if not paths:
+            return conn.execute("DELETE FROM file_locks WHERE team_name = ? AND agent = ?", (team_name, agent)).rowcount
+        real = [os.path.realpath(p) for p in paths]
+        return conn.execute(
+            f"DELETE FROM file_locks WHERE team_name = ? AND agent = ? AND path IN ({','.join('?' * len(real))})",
+            (team_name, agent, *real),
+        ).rowcount
+
+
+def list_file_locks(team_name: str) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM file_locks WHERE team_name = ? ORDER BY created_at", (team_name,))]
 
 
 def add_inbox(team_name: str, sender: str, message: str, kind: str = "info") -> int:
@@ -1771,6 +1819,8 @@ async def _delayed_headless_launch(
             if end_cid and end_cid != start_cid:
                 spent += _cum_tokens(team_name, target, runtime, model, end_cid)
             _set_queue_status(queue_id, "done" if ok else "error", output, tokens=max(0, spent))
+            if msg_type == "dispatch":
+                unlock_files(team_name, target)  # task over: its locks must not outlive it
     if ok and hops < BTW_MAX_HOPS:
         await route_btw_notes(team_name, target, output, hops + 1)
     # Result callback: an agent that dispatched this task gets the outcome pushed back, so it never needs to poll.
