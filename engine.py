@@ -246,6 +246,18 @@ def init_db() -> None:
             created_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS inbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_name TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            kind TEXT DEFAULT 'info',
+            message TEXT NOT NULL,
+            answer TEXT DEFAULT '',
+            status TEXT DEFAULT 'open',
+            created_at TEXT,
+            answered_at TEXT DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS deploys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_name TEXT NOT NULL,
@@ -1230,6 +1242,10 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         )
         if is_lead:
             ctx_prefix += lead_rule
+            ctx_prefix += (
+                f"• Kullanıcıyla iletişim: karar/onay gerekince `team ask-user {team_name} \"soru\"` (cevap sana not olarak gelir), "
+                f"önemli durum bildirimi için `team tell-user {team_name} \"mesaj\"`. Bunları uzun cevap metnine gömme.\n"
+            )
         ctx_prefix += "--------------------------------------------------\n"
         return ctx_prefix + user_prompt
     except Exception:
@@ -1326,8 +1342,51 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
                     f"AND id IN ({','.join('?' * len(task_ids))})",
                     (now(), team_name, *task_ids),
                 )
-    print(f"[HiveForge] Deploy #{dep_id}: {'BAŞARILI' if code == 0 else f'BAŞARISIZ (çıkış kodu {code})'}")
+    verdict = "BAŞARILI" if code == 0 else f"BAŞARISIZ (çıkış kodu {code})"
+    add_inbox(team_name, requested_by, f"Deploy #{dep_id} {verdict}: {cmd_str}" + (f"\n" + "\n".join(tail[-8:]) if code else ""))
+    print(f"[HiveForge] Deploy #{dep_id}: {verdict}")
     return code
+
+
+def add_inbox(team_name: str, sender: str, message: str, kind: str = "info") -> int:
+    """Agent -> user message. kind: 'question' (needs an answer, routed back to the sender) or 'info'."""
+    with get_db() as conn:
+        return conn.execute(
+            "INSERT INTO inbox (team_name, sender, kind, message, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
+            (team_name, sender, "question" if kind == "question" else "info", message, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ).lastrowid
+
+
+def list_inbox(team_name: str, limit: int = 50) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM inbox WHERE team_name = ? ORDER BY (status = 'open') DESC, id DESC LIMIT ?", (team_name, limit)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def answer_inbox(team_name: str, item_id: int, answer: str = "") -> Dict[str, Any]:
+    """Answer a question (delivered to the asking agent) or just mark an info item as read."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM inbox WHERE id = ? AND team_name = ?", (item_id, team_name)).fetchone()
+    if not row:
+        return {"success": False, "error": f"Mesaj bulunamadı: #{item_id}"}
+    if row["status"] != "open":
+        return {"success": False, "error": f"#{item_id} zaten kapalı."}
+    if row["kind"] == "question" and not answer.strip():
+        return {"success": False, "error": "Soru için cevap gerekli."}
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE inbox SET status = ?, answer = ?, answered_at = ? WHERE id = ?",
+            ("answered" if answer.strip() else "read", answer, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), item_id),
+        )
+    res: Dict[str, Any] = {"success": True, "id": item_id}
+    if answer.strip() and row["sender"].startswith("@"):
+        res["delivery"] = await dispatch_message(
+            team_name, row["sender"], f"[KULLANICI CEVABI #{item_id}]\nSoru: {row['message'][:600]}\nCevap: {answer}",
+            sender="User", msg_type="note",
+        )
+    return res
 
 
 def list_deploys(team_name: str, limit: int = 20) -> List[Dict[str, Any]]:

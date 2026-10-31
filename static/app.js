@@ -142,6 +142,7 @@
         document.getElementById('kanbanDrawer').classList.remove('open');
         document.getElementById('locksDrawer').classList.remove('open');
         document.getElementById('toolsDrawer').classList.remove('open');
+        document.getElementById('inboxDrawer').classList.remove('open');
         refreshTokenData();
       }
     }
@@ -268,6 +269,7 @@
         document.getElementById('kanbanDrawer').classList.remove('open');
         document.getElementById('locksDrawer').classList.remove('open');
         document.getElementById('toolsDrawer').classList.remove('open');
+        document.getElementById('inboxDrawer').classList.remove('open');
         refreshBrainView();
       }
     }
@@ -587,6 +589,72 @@
       if (!data.success) alert(`Hata: ${data.error}`);
     }
 
+    // ----------------- Inbox (agent -> user) -----------------
+    let inboxItems = [];
+    let inboxSeenMax = null;  // highest id already notified about (null = first snapshot, don't notify)
+
+    function toggleInboxDrawer() {
+      const d = document.getElementById('inboxDrawer');
+      d.classList.toggle('open');
+      if (d.classList.contains('open')) {
+        document.querySelectorAll('.slide-panel.open').forEach(p => { if (p !== d) p.classList.remove('open'); });
+        if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+        refreshInboxView();
+      }
+    }
+
+    function refreshInboxView() {
+      const open = inboxItems.filter(i => i.status === 'open');
+      const badge = document.getElementById('inboxCountBadge');
+      badge.innerText = open.length;
+      badge.style.background = open.some(i => i.kind === 'question') ? 'var(--amber)' : '';
+      const list = document.getElementById('inboxList');
+      if (!inboxItems.length) {
+        list.innerHTML = '<div style="color:var(--text-dim); font-size:0.75rem; text-align:center; padding:30px 0;">Henüz mesaj yok.<br>Lead `team ask-user` / `team tell-user` ile yazar.</div>';
+        return;
+      }
+      list.innerHTML = inboxItems.map(i => {
+        const isQ = i.kind === 'question', isOpen = i.status === 'open';
+        const head = `<div class="kanban-task-header">
+            <span class="kanban-status-pill ${isOpen ? (isQ ? 'in_progress' : 'review') : 'todo'}">${isQ ? '? SORU' : 'ⓘ BİLGİ'}${isOpen ? '' : ' · kapandı'}</span>
+            <span style="font-size:0.65rem; color:var(--text-dim); font-family:var(--font-mono);">#${i.id} · ${escapeHtml(i.sender)} · ${escapeHtml(i.created_at || '')}</span>
+          </div>`;
+        const body = `<div class="kanban-task-title" style="white-space:pre-wrap;">${escapeHtml(i.message)}</div>`;
+        let actions = '';
+        if (isOpen && isQ) {
+          actions = `<textarea id="inboxAnswer-${i.id}" class="modal-form-input" rows="2" style="margin-top:8px; width:100%; resize:vertical;" placeholder="Cevabınız (${escapeHtml(i.sender)} ajanına iletilir)"></textarea>
+            <button class="quick-pill" style="margin-top:6px; padding:3px 10px; font-size:0.68rem;" onclick="answerInbox(${i.id})">Cevapla</button>`;
+        } else if (isOpen) {
+          actions = `<button class="quick-pill" style="margin-top:8px; padding:3px 10px; font-size:0.68rem;" onclick="answerInbox(${i.id})">✓ Okundu</button>`;
+        } else if (i.answer) {
+          actions = `<div style="font-size:0.7rem; color:#34d399; margin-top:6px;">↳ ${escapeHtml(i.answer)}</div>`;
+        }
+        return `<div class="kanban-task-card" style="${isOpen ? '' : 'opacity:0.55;'}">${head}${body}${actions}</div>`;
+      }).join('');
+    }
+
+    async function answerInbox(id) {
+      const box = document.getElementById(`inboxAnswer-${id}`);
+      const res = await fetch('/api/inbox/answer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team: state.team, id, answer: box ? box.value : '' }),
+      });
+      const data = await res.json();
+      if (!data.success) alert(`Hata: ${data.error}`);
+    }
+
+    function notifyNewInbox(items) {
+      const maxId = Math.max(0, ...items.map(i => i.id));
+      if (inboxSeenMax !== null) {
+        items.filter(i => i.id > inboxSeenMax && i.status === 'open').forEach(i => {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(`HiveForge · ${i.sender} ${i.kind === 'question' ? 'soruyor' : 'bildiriyor'}`, { body: i.message.slice(0, 180), tag: `hive-inbox-${i.id}` });
+          }
+        });
+      }
+      inboxSeenMax = Math.max(inboxSeenMax || 0, maxId);
+    }
+
     function toggleKanbanDrawer() {
       const d = document.getElementById('kanbanDrawer');
       d.classList.toggle('open');
@@ -595,6 +663,7 @@
         document.getElementById('locksDrawer').classList.remove('open');
         document.getElementById('brainDrawer').classList.remove('open');
         document.getElementById('toolsDrawer').classList.remove('open');
+        document.getElementById('inboxDrawer').classList.remove('open');
         refreshKanbanView();
       }
     }
@@ -607,6 +676,7 @@
         document.getElementById('kanbanDrawer').classList.remove('open');
         document.getElementById('brainDrawer').classList.remove('open');
         document.getElementById('toolsDrawer').classList.remove('open');
+        document.getElementById('inboxDrawer').classList.remove('open');
         refreshLocksView();
       }
     }
@@ -1411,6 +1481,13 @@
     }
 
     function handleStreamMessage(msg) {
+      if (msg.type === 'inbox_snapshot') {
+        inboxItems = msg.items || [];
+        notifyNewInbox(inboxItems);
+        refreshInboxView();
+        return;
+      }
+
       if (msg.type === 'tasks_snapshot') {
         teamLedger = msg.tasks || [];
         refreshKanbanView();
