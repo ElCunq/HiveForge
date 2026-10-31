@@ -452,6 +452,31 @@ async def api_review_task(request):
     return web.json_response(res, status=200 if res.get("success") else 400)
 
 
+async def api_get_inbox(request):
+    return web.json_response({"success": True, "items": engine.list_inbox(request.match_info.get("name"))})
+
+
+async def api_create_inbox(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+    if not data.get("team") or not str(data.get("message", "")).strip():
+        return web.json_response({"success": False, "error": "team ve message gerekli"}, status=400)
+    item_id = engine.add_inbox(data["team"], data.get("sender") or "CLI", data["message"], data.get("kind", "info"))
+    return web.json_response({"success": True, "id": item_id})
+
+
+async def api_answer_inbox(request):
+    try:
+        data = await request.json()
+        item_id = int(data.get("id"))
+    except Exception:
+        return web.json_response({"success": False, "error": "Geçersiz istek (team, id gerekli)"}, status=400)
+    res = await engine.answer_inbox(data.get("team", ""), item_id, data.get("answer", ""))
+    return web.json_response(res, status=200 if res.get("success") else 400)
+
+
 async def api_send_note(request):
     try:
         data = await request.json()
@@ -787,6 +812,12 @@ async def websocket_handler(request):
                 last_hashes["ledger"] = ledger_sig
                 await ws.send_json({"type": "tasks_snapshot", "tasks": ledger})
 
+            inbox = engine.list_inbox(team_name)
+            inbox_sig = "|".join(f"{i['id']}:{i['status']}" for i in inbox)
+            if last_hashes.get("inbox") != inbox_sig:
+                last_hashes["inbox"] = inbox_sig
+                await ws.send_json({"type": "inbox_snapshot", "items": inbox})
+
             # Team-wide live token analytics snapshot
             tok_analytics = engine.get_team_token_analytics(team_name)
             tok_sig = f"{tok_analytics['total_cum_tokens']}|{tok_analytics['total_context_tokens']}"
@@ -846,6 +877,9 @@ def create_app():
     app.router.add_post("/api/note", api_send_note)
     app.router.add_get("/api/team/{name}/ledger", api_get_ledger)
     app.router.add_post("/api/task/review", api_review_task)
+    app.router.add_get("/api/team/{name}/inbox", api_get_inbox)
+    app.router.add_post("/api/inbox", api_create_inbox)
+    app.router.add_post("/api/inbox/answer", api_answer_inbox)
     app.router.add_post("/api/team/create", api_create_team)
     app.router.add_post("/api/team/add-agent", api_add_agent)
     app.router.add_post("/api/team/remove-agent", api_remove_agent)
