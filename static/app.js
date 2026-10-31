@@ -251,6 +251,12 @@
               <span>Giriş: ${formatTokens(ag.cum_input_tokens)} • Cache: ${formatTokens(ag.cum_cache_tokens)} • Çıkış: ${formatTokens(ag.cum_output_tokens)}</span>
               <span>#${ag.steps || 0} Adım</span>
             </div>
+            ${(() => {
+              const today = (tokens.today_by_agent || {})[ag.target] || 0, budget = tokens.daily_budget || 0;
+              const over = budget && today >= budget;
+              return `<div style="font-size:0.65rem; font-family:var(--font-mono); padding-top:3px; color:${over ? '#f87171' : 'var(--text-dim)'};">
+                Bugün: <strong style="color:${over ? '#f87171' : '#fff'};">${formatTokens(today)}</strong>${budget ? ` / ${formatTokens(budget)} bütçe` : ' (bütçe yok)'}</div>`;
+            })()}
           </div>
         `;
       });

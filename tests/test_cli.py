@@ -23,4 +23,5 @@ engine.shutil.which = lambda b: "/usr/bin/tmux"
 assert engine.find_interactive_tmux_pane(target="@web") == "%2"
 assert engine.find_interactive_tmux_pane(target="@webhook") == "%1"
 assert engine.find_interactive_tmux_pane(target="@we") is None
+assert (hive._parse_tokens("20M"), hive._parse_tokens("500k"), hive._parse_tokens("1.5m"), hive._parse_tokens("0")) == (20_000_000, 500_000, 1_500_000, 0)
 print("OK")
