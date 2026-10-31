@@ -152,10 +152,11 @@
       try {
         const res = await fetch(`/api/team/${state.team}/tokens`);
         const data = await res.json();
-        if (data.success && data.tokens) {
-          latestTokenData = data.tokens;
-          updateTokenNavbarDisplay(data.tokens);
-          renderTokenDrawerBody(data.tokens);
+        const tokens = data.success ? (data.tokens || data) : null;  // the API returns the analytics object itself
+        if (tokens && tokens.agents) {
+          latestTokenData = tokens;
+          updateTokenNavbarDisplay(tokens);
+          renderTokenDrawerBody(tokens);
         } else {
           body.innerHTML = `<div style="color:var(--text-dim); font-size:0.75rem; text-align:center; padding:30px 0;">Token verisi alınamadı: ${escapeHtml(data.error || 'Bilinmeyen hata')}</div>`;
         }
@@ -613,7 +614,9 @@
       const open = inboxItems.filter(i => i.status === 'open');
       const badge = document.getElementById('inboxCountBadge');
       badge.innerText = open.length;
-      badge.style.background = open.some(i => i.kind === 'question') ? 'var(--amber)' : '';
+      const hasQuestion = open.some(i => i.kind === 'question');
+      badge.style.background = hasQuestion ? 'var(--amber)' : '';
+      badge.style.color = hasQuestion ? '#111' : '';
       const list = document.getElementById('inboxList');
       if (!inboxItems.length) {
         list.innerHTML = '<div style="color:var(--text-dim); font-size:0.75rem; text-align:center; padding:30px 0;">Henüz mesaj yok.<br>Lead `team ask-user` / `team tell-user` ile yazar.</div>';

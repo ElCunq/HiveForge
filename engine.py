@@ -1389,6 +1389,19 @@ def tokens_today(team_name: str, target: Optional[str] = None) -> Dict[str, int]
         return {r[0]: int(r[1] or 0) for r in conn.execute(sql + " GROUP BY target", args)}
 
 
+def _quota_alert(team_name: str, target: str, output: str) -> None:
+    """Provider quota (429) hit: tell the user once while the alert is unread, instead of failing silently per turn."""
+    with get_db() as conn:
+        if conn.execute(
+            "SELECT 1 FROM inbox WHERE team_name = ? AND sender = 'HiveForge' AND status = 'open' AND message LIKE 'Model kotası doldu%'",
+            (team_name,),
+        ).fetchone():
+            return
+    m = re.search(r"Resets in ([0-9hms]+)", output or "")
+    add_inbox(team_name, "HiveForge", f"Model kotası doldu ({target} ilk etkilenen). Kota sıfırlanana kadar ajan turları hata verir"
+              + (f"; sıfırlanma: {m.group(1)} sonra." if m else "."))
+
+
 def _budget_alert(team_name: str, target: str, before: int, after: int) -> None:
     budget = get_daily_budget(team_name)
     if budget <= 0:
@@ -1881,6 +1894,8 @@ async def _delayed_headless_launch(
             spent = _cum_tokens(team_name, target, runtime, model, start_cid) - start_tokens if start_cid else 0
             if end_cid and end_cid != start_cid:
                 spent += _cum_tokens(team_name, target, runtime, model, end_cid)
+            if not ok and "RESOURCE_EXHAUSTED" in (output or ""):
+                _quota_alert(team_name, target, output)
             before_today = tokens_today(team_name, target).get(target, 0)
             _set_queue_status(queue_id, "done" if ok else "error", output, tokens=max(0, spent))
             _budget_alert(team_name, target, before_today, before_today + max(0, spent))
