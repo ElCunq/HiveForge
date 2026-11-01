@@ -21,5 +21,8 @@ async def main():
     sid = cid(); assert sid and "--session-id" in cmds[0] and sid in cmds[0], cmds[0]
     await engine.execute_headless_agent_turn("t", "@a", "claude", "", sid, "/tmp", "", "low", "auto", "iki")
     assert cmds[1][cmds[1].index("--resume") + 1] == sid and "--session-id" not in cmds[1]
+    assert "--model" not in cmds[1]
+    await engine.execute_headless_agent_turn("t", "@a", "claude", "claude-haiku-5-5", sid, "/tmp", "", "low", "auto", "üç")
+    assert cmds[-1][cmds[-1].index("--model") + 1] == "claude-haiku-5-5", cmds[-1]
     print("OK", sid)
 asyncio.run(main())

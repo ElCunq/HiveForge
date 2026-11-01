@@ -1558,6 +1558,8 @@ async def execute_headless_agent_turn(
 
     elif runtime == "claude":
         cmd = ["claude", "--dangerously-skip-permissions"]
+        if model:
+            cmd.extend(["--model", model])
         if effort in ("low", "medium", "high"):
             cmd.extend(["--effort", effort])
         # Keep one Claude session per agent so it remembers earlier turns (cid is saved after the first successful turn)
