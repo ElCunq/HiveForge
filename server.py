@@ -847,10 +847,16 @@ async def websocket_handler(request):
                 })
 
             await asyncio.sleep(1.0)
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, ConnectionResetError):
         pass
+    except Exception as e:
+        if "closing transport" not in str(e).lower() and "reset" not in str(e).lower():
+            logging.warning(f"WebSocket client disconnected: {e}")
     finally:
-        await ws.close()
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
     return ws
 

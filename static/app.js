@@ -1470,12 +1470,37 @@
       ws.onclose = () => {
         setTimeout(initWebSocket, 2000);
       };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch(e) {}
+      };
     }
 
     function reconnectWebSocket() {
-      if (ws) ws.close();
+      if (ws) {
+        try { ws.close(); } catch(e) {}
+      }
       initWebSocket();
     }
+
+    // Auto-reconnect & refresh state when computer wakes from sleep or tab becomes visible
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          reconnectWebSocket();
+        }
+        if (state.team) {
+          loadTeamData(state.team);
+        }
+      }
+    });
+
+    window.addEventListener('online', () => {
+      reconnectWebSocket();
+      if (state.team) {
+        loadTeamData(state.team);
+      }
+    });
 
     // Runtime/model can change outside this page (CLI, another tab): keep card badge + config modal in sync.
     function syncCardRuntime(card, msg) {
