@@ -733,9 +733,18 @@ async def websocket_handler(request):
     team_name = request.query.get("team") or engine.default_team()
 
     last_hashes = {}
+    last_wall = time.time()
+    last_mono = time.monotonic()
 
     try:
         while not ws.closed:
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            # Detect system sleep/suspend or major lag jump: force a full UI re-sync
+            if (now_wall - last_wall) - (now_mono - last_mono) > 5.0 or (now_wall - last_wall) > 10.0:
+                last_hashes.clear()
+            last_wall = now_wall
+            last_mono = now_mono
             with engine.get_db() as conn:
                 team = conn.execute("SELECT * FROM teams WHERE name = ?", (team_name,)).fetchone()
                 if not team:

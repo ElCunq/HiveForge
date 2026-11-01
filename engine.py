@@ -1639,14 +1639,16 @@ async def execute_headless_agent_turn(
     try:
         stop_reason = ""
         comm = asyncio.ensure_future(proc.communicate())
-        deadline = time.time() + TURN_TIMEOUT_SEC
+        deadline = time.monotonic() + TURN_TIMEOUT_SEC
         while not stop_reason:
-            done, _ = await asyncio.wait({comm}, timeout=max(0.05, min(STEP_POLL_SEC, deadline - time.time())))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop_reason = f"tur {int(TURN_TIMEOUT_SEC)} sn içinde bitmedi"
+                break
+            done, _ = await asyncio.wait({comm}, timeout=max(0.05, min(STEP_POLL_SEC, remaining)))
             if done:
                 break
-            if time.time() >= deadline:
-                stop_reason = f"tur {int(TURN_TIMEOUT_SEC)} sn içinde bitmedi"
-            elif MAX_TURN_STEPS and runtime == "agy" and detected_cid:
+            if MAX_TURN_STEPS and runtime == "agy" and detected_cid:
                 steps = read_brain_snapshot(detected_cid, task_key=task_key, runtime=runtime)["telemetry"].get("steps", 0)
                 if steps - start_steps > MAX_TURN_STEPS:
                     stop_reason = f"tur {MAX_TURN_STEPS} adım sınırını aştı (HIVE_MAX_STEPS)"
@@ -1907,6 +1909,44 @@ async def _delayed_headless_launch(
             ok, _, output = await execute_headless_agent_turn(
                 team_name, target, runtime, model, cid, workspace_dir, persona, effort, mode, prompt, is_lead, hops
             )
+            # Transient Network & Sleep Interruption Auto-Recovery:
+            # If the process was interrupted mid-stream by system suspend/resume or broken network socket,
+            # wait for network to stabilize (4s) and auto-resume the same conversation turn instead of failing.
+            is_interrupted = any(
+                err in (output or "").lower()
+                for err in (
+                    "error: interrupted",
+                    "interrupted",
+                    "connection reset",
+                    "connection aborted",
+                    "broken pipe",
+                    "network is unreachable",
+                    "the stream was interrupted",
+                    "stream closed",
+                    "clientconnectionreseterror",
+                )
+            )
+            if not ok and is_interrupted and "sınırını aştı" not in (output or "") and "bitmedi" not in (output or ""):
+                print(f"[RESILIENCE] {team_name}:{target} kesintiye uğradı (uyku/bağlantı kopması). Otomatik kurtarma başlatılıyor (4s)...")
+                await asyncio.sleep(4.0)
+                active_cid = _agent_cid(team_name, target, is_lead) or cid
+                resume_prompt = (
+                    "[SİSTEM UYKU/AĞ KESİNTİSİ SONRASI KURTARMA]\n"
+                    "Bağlantı koptu ve sistem yeniden bağlandı. "
+                    "Lütfen çalışma dizinindeki son durumu ve dosyaları kontrol et; görevine kaldığın yerden eksiksiz devam et.\n\n"
+                    f"Görev:\n{prompt}"
+                )
+                try:
+                    retry_ok, _, retry_out = await execute_headless_agent_turn(
+                        team_name, target, runtime, model, active_cid, workspace_dir, persona, effort, mode, resume_prompt, is_lead, hops
+                    )
+                    if retry_ok:
+                        ok, output = True, retry_out
+                        print(f"[RESILIENCE] {team_name}:{target} başarıyla kurtarıldı ve tamamlandı.")
+                    else:
+                        output = f"{output}\n[Kurtarma denemesi başarısız]: {retry_out}"
+                except Exception as e_ret:
+                    output = f"{output}\n[Kurtarma denemesi istisnası]: {e_ret}"
         except Exception as e:
             output = f"Hata: {e}"
         finally:
