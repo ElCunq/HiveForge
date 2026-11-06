@@ -22,7 +22,7 @@ import shutil
 import signal
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Iterator, List, Optional, Any, Tuple
 
 def _dir_is_writable(path: Path) -> bool:
     """Klasörü oluşturabiliyor/yazabiliyor muyuz? (Windows'ta kısıtlı profil klasörleri için)"""
@@ -179,12 +179,19 @@ async def create_shell_subprocess(command: str, cwd: str) -> asyncio.subprocess.
     )
 
 
-def get_db() -> sqlite3.Connection:
+@contextlib.contextmanager
+def get_db() -> Iterator[sqlite3.Connection]:
+    """Commit (or roll back) AND close. A bare sqlite3 `with` only commits, so the server leaked a connection
+    per call until it hit the fd limit ("unable to open database file" / "Too many open files")."""
     conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
