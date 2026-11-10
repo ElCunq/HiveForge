@@ -91,7 +91,6 @@
 
       // Load team info and re-init
       await loadTeamData(teamName);
-      reconnectWebSocket();
       resetCanvasView();
     }
 
@@ -869,6 +868,9 @@
         }
 
         updateWires();
+        // Cards were rebuilt empty; the server only streams what changed per connection,
+        // so a fresh socket is what makes it resend every agent's current output.
+        reconnectWebSocket();
       } catch (e) {
         console.error('Failed to load team data', e);
       }
@@ -1478,6 +1480,7 @@
 
     function reconnectWebSocket() {
       if (ws) {
+        ws.onclose = null;  // else the old socket's auto-retry opens a second, duplicate stream
         try { ws.close(); } catch(e) {}
       }
       initWebSocket();
@@ -1485,21 +1488,13 @@
 
     // Auto-reconnect & refresh state when computer wakes from sleep or tab becomes visible
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          reconnectWebSocket();
-        }
-        if (state.team) {
-          loadTeamData(state.team);
-        }
+      if (document.visibilityState === 'visible' && state.team) {
+        loadTeamData(state.team);  // reconnects the socket itself
       }
     });
 
     window.addEventListener('online', () => {
-      reconnectWebSocket();
-      if (state.team) {
-        loadTeamData(state.team);
-      }
+      if (state.team) loadTeamData(state.team);
     });
 
     // Runtime/model can change outside this page (CLI, another tab): keep card badge + config modal in sync.
@@ -1927,7 +1922,6 @@
       setTeamLabels(names.includes(saved) ? saved : (names[0] || ''));
       renderTeamsDropdown();
       await loadTeamData(state.team);
-      initWebSocket();
       resetCanvasView();
     });
 
