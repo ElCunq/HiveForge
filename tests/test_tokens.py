@@ -48,7 +48,10 @@ async def main():
     lshort = engine.build_agent_orchestration_prompt("t", "@lead", "X", first_turn=False)
     assert "TOKEN KURALLARI" in full and "TOKEN KURALLARI" not in short and "LİDER" not in full
     assert "KENDİN YAPMA" in lfull and "KENDİN YAPMA" in lshort
-    assert len(short) < 250 and len(lshort) < 500, (len(short), len(lshort))
+    assert len(short) < 250 and len(lshort) < 600, (len(short), len(lshort))
+    # workers stay terse; the lead talks to the user normally
+    assert "en fazla 3 satır" in full and "en fazla 3 satır" not in lfull and "normal bir sohbettir" in lfull
+    assert "minimal çıktı" in short and "3 satır sınırı SANA uygulanmaz" in lshort
     for p in (full, short, lfull, lshort):
         assert engine.clean_user_prompt(p) == "X", engine.clean_user_prompt(p)
     print(f"OK (tam blok {len(full)} karakter, hatırlatma {len(short)} / lead {len(lshort)})")

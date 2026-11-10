@@ -1233,7 +1233,12 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
 
         if not first_turn:
             ctx_prefix = "[HIVEFORGE BAĞLAMI] " + (lead_rule.lstrip("• ") if is_lead else "")
-            ctx_prefix += "Token kuralları geçerli: minimal çıktı (düşünce/plan/teknoloji anlatma), hedefli okuma, poll yok, teşekkür/onay notu yok.\n"
+            ctx_prefix += (
+                "Token kuralları: ara adımlarda anlatım yok, hedefli okuma, poll yok. 3 satır sınırı SANA uygulanmaz: "
+                "kullanıcıya son cevabın şablonsuz, açıklayıcı bir sohbet olsun.\n"
+                if is_lead else
+                "Token kuralları geçerli: minimal çıktı (düşünce/plan/teknoloji anlatma), hedefli okuma, poll yok, teşekkür/onay notu yok.\n"
+            )
             return ctx_prefix + "--------------------------------------------------\n" + user_prompt
 
         teammates = []
@@ -1262,12 +1267,18 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
             f"aynı dosyayı tekrar tekrar okuma.\n"
             f"  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar tekrar `team agents` yok. `team dispatch` ile verdiğin "
             f"görevler bitince sonuç HiveForge'dan otomatik gelir; turunu bitir.\n"
-            f"  4. MİNİMAL ÇIKTI: düşünce sürecini, planını, kullandığın teknolojileri/açıklamaları yazma; adımlar arasında "
-            f"anlatım yapma. Son cevap en fazla 3 satır: değişen dosyalar, sonuç (✓/✗), varsa engel. Rapor/tablo/özet yok.\n"
+            + (
+                f"  4. ARA ADIMLARDA ANLATIM YAPMA (her adım bağlamı yeniden okutur). Ama kullanıcıya verdiğin SON CEVAP normal bir "
+                f"sohbettir: soruyu tam cevapla; ne yapıldı, neden, durum, riskler, senin önerin ve sonraki adım. Şablon "
+                f"('Değişen dosyalar/Sonuç/Engel') kullanma. Rapor/özet istenirse içeriği cevaba yaz, dosyaya yazıp link verme.\n"
+                if is_lead else
+                f"  4. MİNİMAL ÇIKTI: düşünce sürecini, planını, kullandığın teknolojileri/açıklamaları yazma; adımlar arasında "
+                f"anlatım yapma. Son cevap en fazla 3 satır: değişen dosyalar, sonuç (✓/✗), varsa engel. Rapor/tablo/özet yok.\n"
+            ) + (
             f"• Dosya kilidi: değiştireceğin dosyaları önce `team lock {team_name} <dosya...>` ile kilitle. Başkasında kilitliyse "
             f"dokunma, sahibine `/btw` yaz. Görev turun bitince kilitlerin otomatik açılır.\n"
             f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
-        )
+        ))
         if is_lead:
             ctx_prefix += lead_rule
             ctx_prefix += (
