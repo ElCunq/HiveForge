@@ -1454,3 +1454,12 @@
 .batch-dot.error { background: #ef4444; opacity: 1; }
 @keyframes batch-pulse { 50% { opacity: .55; } }
 @media (prefers-reduced-motion: reduce) { .batch-dot.running { animation: none; } }
+
+.batch-dot.quota { background: #a855f7; opacity: 1; box-shadow: 0 0 6px #a855f7aa; }
+.agent-card.quota-hit { border-color: #a855f7 !important; box-shadow: 0 0 0 1px #a855f7, 0 0 18px #a855f755 !important; }
+.quota-resume-btn, .quota-resume-all { background: #7e22ce; color: #fff; border: 1px solid #a855f7; border-radius: 8px; font-weight: 600; cursor: pointer; }
+.quota-resume-btn { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5; padding: 7px 14px; font-size: .75rem; }
+.quota-resume-btn:hover, .quota-resume-all:hover { background: #9333ea; }
+.quota-resume-btn:disabled, .quota-resume-all:disabled { opacity: .5; cursor: wait; }
+.quota-resume-all[hidden] { display: none; }
+.quota-resume-all { white-space: nowrap; }

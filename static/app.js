@@ -558,7 +558,7 @@
     // HiveForge task ledger: status -> [pill class, label]
     const LEDGER_STATUS = {
       queued: ['todo', '○ SIRADA'], running: ['in_progress', '⚡ ÇALIŞIYOR'], sent: ['in_progress', '⇢ TMUX'],
-      done: ['review', '◎ İNCELEME BEKLİYOR'], error: ['blocked', '▲ HATA'], rejected: ['blocked', '↺ REDDEDİLDİ'],
+      done: ['review', '◎ İNCELEME BEKLİYOR'], error: ['blocked', '▲ HATA'], rejected: ['blocked', '↺ REDDEDİLDİ'], quota: ['blocked', '◷ KOTA BEKLİYOR'],
       approved: ['done', '✓ ONAYLANDI'], deployed: ['done', '🚀 DEPLOY EDİLDİ'],
     };
 
@@ -1925,16 +1925,57 @@
       resetCanvasView();
     });
 
-// One dot per worker for the latest lead batch: grey = not in batch, yellow = working, green = done, red = error.
-function renderBatchDots({ workers = [], agents = {} }) {
+// One dot per worker for the latest lead batch: grey = not in batch, yellow = working, green = done, red = error,
+// purple = stopped on a provider quota. Quota-stopped cards get the same colour and their own resume button.
+function renderBatchDots({ workers = [], agents = {}, quota = [] }) {
   const box = document.getElementById('batchDots');
   if (!box) return;
-  const label = { running: 'çalışıyor', done: 'bitti', error: 'hata' };
+  const label = { running: 'çalışıyor', done: 'bitti', error: 'hata', quota: 'kota doldu' };
   box.replaceChildren(...workers.map((t) => {
     const dot = document.createElement('span');
-    const st = agents[t] || 'idle';
+    const st = quota.includes(t) ? 'quota' : (agents[t] || 'idle');
     dot.className = `batch-dot ${st}`;
     dot.title = `${t}: ${label[st] || 'boşta'}`;
     return dot;
   }));
+
+  const all = document.getElementById('quotaResumeAll');
+  if (all) {
+    all.hidden = !quota.length;
+    all.disabled = false;
+    all.textContent = `▶ Kota yenilendi (${quota.length})`;
+  }
+  Object.values(state.cards).forEach((card) => {
+    const el = document.getElementById(`card-${card.id}`);
+    if (!el) return;
+    const hit = quota.includes(card.target);
+    el.classList.toggle('quota-hit', hit);
+    let btn = el.querySelector('.quota-resume-btn');
+    if (hit && !btn) {
+      btn = document.createElement('button');
+      btn.className = 'quota-resume-btn';
+      btn.textContent = 'Kota yenilendi, devam et';
+      btn.onclick = (e) => { e.stopPropagation(); resumeQuota(card.target, btn); };
+      el.appendChild(btn);
+    } else if (!hit && btn) {
+      btn.remove();
+    }
+  });
+}
+
+async function resumeQuota(target, btn) {
+  const b = btn || document.getElementById('quotaResumeAll');
+  if (b) b.disabled = true;
+  try {
+    const res = await fetch('/api/quota/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: state.team, target }),
+    });
+    const data = await res.json();
+    if (!data.success || !data.resumed.length) throw new Error(data.error || 'devam ettirilecek ajan yok');
+  } catch (e) {
+    if (b) b.disabled = false;
+    alert(`Devam ettirilemedi: ${e.message}`);
+  }
 }

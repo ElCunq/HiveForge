@@ -1399,6 +1399,10 @@ def tokens_today(team_name: str, target: Optional[str] = None) -> Dict[str, int]
         return {r[0]: int(r[1] or 0) for r in conn.execute(sql + " GROUP BY target", args)}
 
 
+# agy: RESOURCE_EXHAUSTED / "Individual quota reached"; claude: "You've hit your 5-hour limit"
+QUOTA_RE = re.compile(r"RESOURCE_EXHAUSTED|quota reached|hit your [\w-]* ?limit", re.I)
+
+
 def _quota_alert(team_name: str, target: str, output: str) -> None:
     """Provider quota (429) hit: tell the user once while the alert is unread, instead of failing silently per turn."""
     with get_db() as conn:
@@ -1812,7 +1816,7 @@ async def dispatch_message(
         if lead_task:
             last = conn.execute("SELECT MAX(batch) FROM dispatch_queue WHERE team_name = ?", (team_name,)).fetchone()[0] or 0
             still_open = conn.execute(
-                "SELECT 1 FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status IN ('queued', 'running')", (team_name, last)
+                "SELECT 1 FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status IN ('queued', 'running', 'quota')", (team_name, last)
             ).fetchone()
             batch = last if (last and still_open) else last + 1
 
@@ -1962,10 +1966,11 @@ async def _delayed_headless_launch(
             spent = _cum_tokens(team_name, target, runtime, model, start_cid) - start_tokens if start_cid else 0
             if end_cid and end_cid != start_cid:
                 spent += _cum_tokens(team_name, target, runtime, model, end_cid)
-            if not ok and "RESOURCE_EXHAUSTED" in (output or ""):
+            quota = not ok and bool(QUOTA_RE.search(output or ""))
+            if quota:
                 _quota_alert(team_name, target, output)
             before_today = tokens_today(team_name, target).get(target, 0)
-            _set_queue_status(queue_id, "done" if ok else "error", output, tokens=max(0, spent))
+            _set_queue_status(queue_id, "done" if ok else ("quota" if quota else "error"), output, tokens=max(0, spent))
             _budget_alert(team_name, target, before_today, before_today + max(0, spent))
             if msg_type == "dispatch":
                 unlock_files(team_name, target)  # task over: its locks must not outlive it
@@ -1994,10 +1999,10 @@ def _finished_batch_summary(team_name: str, queue_id: Optional[int]) -> str:
         if not row or not row["batch"]:
             return ""
         rows = conn.execute(
-            "SELECT id, target, status, result_preview FROM dispatch_queue WHERE team_name = ? AND batch = ? ORDER BY id",
+            "SELECT id, target, status, result_preview FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status != 'resumed' ORDER BY id",
             (team_name, row["batch"]),
         ).fetchall()
-    if any(r["status"] in ("queued", "running") for r in rows):
+    if any(r["status"] in ("queued", "running", "quota") for r in rows):
         return ""
     lines = [f"[GÖREVLER BİTTİ • parti {row['batch']}] {sum(r['status'] == 'done' for r in rows)}/{len(rows)} tamam."]
     for r in rows:
@@ -2015,15 +2020,53 @@ def batch_status(team_name: str) -> Dict[str, Any]:
     with get_db() as conn:
         last = conn.execute("SELECT MAX(batch) FROM dispatch_queue WHERE team_name = ?", (team_name,)).fetchone()[0] or 0
         rows = conn.execute(
-            "SELECT target, status FROM dispatch_queue WHERE team_name = ? AND batch = ? AND batch > 0", (team_name, last)
+            "SELECT target, status FROM dispatch_queue WHERE team_name = ? AND batch = ? AND batch > 0 AND status != 'resumed'",
+            (team_name, last),
         ).fetchall()
+    rank = {"running": 3, "quota": 2, "error": 1, "done": 0}
     agents: Dict[str, str] = {}
     for r in rows:
-        st = "running" if r["status"] in ("queued", "running") else ("error" if r["status"] in ("error", "stale") else "done")
-        prev = agents.get(r["target"])
-        if prev != "running" and not (prev == "error" and st == "done"):
+        st = r["status"]
+        st = "running" if st in ("queued", "running") else st if st == "quota" else "error" if st in ("error", "stale") else "done"
+        if rank[st] >= rank.get(agents.get(r["target"], "done"), 0):
             agents[r["target"]] = st
-    return {"batch": last, "agents": agents}
+    return {"batch": last, "agents": agents, "quota": quota_agents(team_name)}
+
+
+def quota_agents(team_name: str) -> List[str]:
+    """Agents whose last turn died on a provider quota and are waiting for `resume_quota`."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT target FROM dispatch_queue WHERE team_name = ? AND status = 'quota' ORDER BY target", (team_name,)
+        ).fetchall()
+    return [r["target"] for r in rows]
+
+
+async def resume_quota(team_name: str, target: str = "") -> Dict[str, Any]:
+    """'Kota yenilendi, devam et' to every quota-stopped agent (or just `target`). The failed turn may have died before
+    the agent read its task, so the task text is re-sent; the old rows become 'resumed'."""
+    sql, args = "SELECT * FROM dispatch_queue WHERE team_name = ? AND status = 'quota'", [team_name]
+    if target:
+        sql += " AND target = ?"
+        args.append(target)
+    with get_db() as conn:
+        rows = conn.execute(sql + " ORDER BY id", args).fetchall()
+    by_target: Dict[str, List[sqlite3.Row]] = {}
+    for r in rows:
+        by_target.setdefault(r["target"], []).append(r)
+    resumed = []
+    for tgt, items in by_target.items():
+        last = items[-1]
+        tasks = "\n\n".join(f"[Yarım kalan #{r['id']}]\n{clean_user_prompt(r['message'])[:3000]}" for r in items[-3:])
+        res = await dispatch_message(
+            team_name, tgt, f"Kota yenilendi, devam et. Bıraktığın yerden sürdür:\n\n{tasks}",
+            sender=last["sender"], msg_type=last["msg_type"],
+        )
+        if res.get("success"):
+            with get_db() as conn:
+                conn.executemany("UPDATE dispatch_queue SET status = 'resumed' WHERE id = ?", [(r["id"],) for r in items])
+            resumed.append(tgt)
+    return {"success": True, "resumed": resumed}
 
 
 async def _rotate_session_if_large(
@@ -2075,7 +2118,7 @@ def _cum_tokens(team_name: str, target: str, runtime: str, model: str, cid: str)
     return int(snap.get("telemetry", {}).get("cum_total_tokens", 0) or 0)
 
 
-TASK_OPEN_STATUSES = ("queued", "running", "done", "error", "rejected")
+TASK_OPEN_STATUSES = ("queued", "running", "done", "error", "rejected", "quota")
 
 
 def task_title(message: str) -> str:

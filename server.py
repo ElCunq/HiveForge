@@ -694,6 +694,16 @@ async def api_remove_agent(request):
     return web.json_response({"success": True, "removed": found["name"], "target": found["target"]})
 
 
+async def api_quota_resume(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+    if not data.get("team"):
+        return web.json_response({"success": False, "error": "team is required"}, status=400)
+    return web.json_response(await engine.resume_quota(data["team"], data.get("target") or ""))
+
+
 async def api_dispatch(request):
     try:
         data = await request.json()
@@ -915,6 +925,7 @@ def create_app():
     app.router.add_get("/api/team/{name}/inbox", api_get_inbox)
     app.router.add_post("/api/inbox", api_create_inbox)
     app.router.add_post("/api/inbox/answer", api_answer_inbox)
+    app.router.add_post("/api/quota/resume", api_quota_resume)
     app.router.add_post("/api/team/create", api_create_team)
     app.router.add_post("/api/team/add-agent", api_add_agent)
     app.router.add_post("/api/team/remove-agent", api_remove_agent)
