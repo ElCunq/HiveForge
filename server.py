@@ -32,6 +32,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # ----------------- Dosya Kilitleri & Çakışma Bariyeri -----------------
 
+
 def scan_team_locks(team_name: str, project_dir: str):
     locks = [
         {"file": l["path"], "agent": l["agent"], "time": l["created_at"], "scope": "hiveforge"}
@@ -42,12 +43,14 @@ def scan_team_locks(team_name: str, project_dir: str):
         try:
             data = json.loads(team_lock_file.read_text(encoding="utf-8"))
             for fpath, info in data.items():
-                locks.append({
-                    "file": fpath,
-                    "agent": info.get("claimed_by", "unknown"),
-                    "time": info.get("locked_at", ""),
-                    "scope": "team",
-                })
+                locks.append(
+                    {
+                        "file": fpath,
+                        "agent": info.get("claimed_by", "unknown"),
+                        "time": info.get("locked_at", ""),
+                        "scope": "team",
+                    }
+                )
         except Exception:
             pass
 
@@ -60,18 +63,21 @@ def scan_team_locks(team_name: str, project_dir: str):
                 try:
                     data = json.loads(lf.read_text(encoding="utf-8"))
                     for fpath, info in data.items():
-                        locks.append({
-                            "file": fpath,
-                            "agent": info.get("claimed_by", "unknown"),
-                            "time": info.get("locked_at", ""),
-                            "scope": sub.name,
-                        })
+                        locks.append(
+                            {
+                                "file": fpath,
+                                "agent": info.get("claimed_by", "unknown"),
+                                "time": info.get("locked_at", ""),
+                                "scope": sub.name,
+                            }
+                        )
                 except Exception:
                     pass
     return locks
 
 
 # ----------------- Project Brain & Kanban Ayrıştırıcı -----------------
+
 
 def extract_project_brain(project_dir: str, team_name: str):
     candidates = engine.team_memory_files(project_dir)
@@ -137,37 +143,38 @@ def extract_kanban_tasks(project_dir: str, team_name: str):
 
 def get_team_agents(team_name: str):
     with engine.get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM agents WHERE team_name = ? ORDER BY aid ASC", (team_name,)).fetchall()
         agents = []
         for idx, r in enumerate(rows):
             cid = r["cid"] or ""
             runtime = r["runtime"] if ("runtime" in r.keys() and r["runtime"]) else "agy"
             model = r["model"] if ("model" in r.keys() and r["model"]) else ""
-            agents.append({
-                "id": f"agent_{r['aid']}",
-                "pane": idx,
-                "aid": r["aid"],
-                "name": r["name"],
-                "role": r["role"],
-                "target": r["target"],
-                "cid": cid[:8] if cid else "new-agent",
-                "full_cid": cid,
-                "runtime": runtime,
-                "model": model,
-                "persona": r["persona"] or "",
-                "effort": r["effort"] or "medium",
-                "mode": r["mode"] or "auto",
-                "workspace_dir": r["workspace_dir"] or "",
-                "skills": json.loads(r["skills_json"] or "[]"),
-                "tools": json.loads(r["tools_json"] or "[]"),
-                "is_alive": True,
-            })
+            agents.append(
+                {
+                    "id": f"agent_{r['aid']}",
+                    "pane": idx,
+                    "aid": r["aid"],
+                    "name": r["name"],
+                    "role": r["role"],
+                    "target": r["target"],
+                    "cid": cid[:8] if cid else "new-agent",
+                    "full_cid": cid,
+                    "runtime": runtime,
+                    "model": model,
+                    "persona": r["persona"] or "",
+                    "effort": r["effort"] or "medium",
+                    "mode": r["mode"] or "auto",
+                    "workspace_dir": r["workspace_dir"] or "",
+                    "skills": json.loads(r["skills_json"] or "[]"),
+                    "tools": json.loads(r["tools_json"] or "[]"),
+                    "is_alive": True,
+                }
+            )
         return agents
 
 
 # ----------------- HTTP API Handlers -----------------
+
 
 async def handle_index(request):
     index_file = STATIC_DIR / "index.html"
@@ -195,16 +202,16 @@ async def api_list_teams(request):
     with engine.get_db() as conn:
         rows = conn.execute("SELECT * FROM teams ORDER BY name ASC").fetchall()
         for r in rows:
-            ag_count = conn.execute(
-                "SELECT COUNT(*) FROM agents WHERE team_name = ?", (r["name"],)
-            ).fetchone()[0]
-            teams.append({
-                "name": r["name"],
-                "role": r["lead_role"],
-                "project_dir": r["project_dir"],
-                "agent_count": ag_count,
-                "is_running": True,  # Native headless engine is always online
-            })
+            ag_count = conn.execute("SELECT COUNT(*) FROM agents WHERE team_name = ?", (r["name"],)).fetchone()[0]
+            teams.append(
+                {
+                    "name": r["name"],
+                    "role": r["lead_role"],
+                    "project_dir": r["project_dir"],
+                    "agent_count": ag_count,
+                    "is_running": True,  # Native headless engine is always online
+                }
+            )
     return web.json_response({"success": True, "teams": teams})
 
 
@@ -237,19 +244,21 @@ async def api_get_team_info(request):
     brain_sections = extract_project_brain(project_dir, team_name)
     tokens = engine.get_team_token_analytics(team_name)
 
-    return web.json_response({
-        "success": True,
-        "team": team_name,
-        "engine": "native-jsonl-sqlite-v3",
-        "is_running": True,
-        "project_dir": project_dir,
-        "lead": lead_info,
-        "agents": agents,
-        "locks": locks,
-        "tasks": tasks,
-        "brain": brain_sections,
-        "tokens": tokens,
-    })
+    return web.json_response(
+        {
+            "success": True,
+            "team": team_name,
+            "engine": "native-jsonl-sqlite-v3",
+            "is_running": True,
+            "project_dir": project_dir,
+            "lead": lead_info,
+            "agents": agents,
+            "locks": locks,
+            "tasks": tasks,
+            "brain": brain_sections,
+            "tokens": tokens,
+        }
+    )
 
 
 async def api_get_team_tokens(request):
@@ -289,9 +298,7 @@ async def api_configure_agent(request):
                 conn.execute("UPDATE teams SET lead_runtime = ? WHERE name = ?", (data["runtime"], team))
             return web.json_response({"success": True, "message": "Tech Lead yapılandırması güncellendi."})
 
-        row = conn.execute(
-            "SELECT * FROM agents WHERE team_name = ? AND target = ?", (team, target)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM agents WHERE team_name = ? AND target = ?", (team, target)).fetchone()
         if not row:
             return web.json_response({"success": False, "error": f"Ajan bulunamadı: {target}"}, status=404)
 
@@ -452,7 +459,11 @@ async def api_review_task(request):
     if decision not in ("approve", "reject", "onay", "ret"):
         return web.json_response({"success": False, "error": "decision: approve|reject"}, status=400)
     res = await engine.review_task(
-        data.get("team", ""), task_id, decision in ("approve", "onay"), data.get("note", ""), data.get("sender") or "User"
+        data.get("team", ""),
+        task_id,
+        decision in ("approve", "onay"),
+        data.get("note", ""),
+        data.get("sender") or "User",
     )
     return web.json_response(res, status=200 if res.get("success") else 400)
 
@@ -593,9 +604,7 @@ async def api_add_agent(request):
         if not t_row:
             return web.json_response({"success": False, "error": f"Team '{team}' not found"}, status=404)
 
-        max_aid = conn.execute(
-            "SELECT COALESCE(MAX(aid), 0) FROM agents WHERE team_name = ?", (team,)
-        ).fetchone()[0]
+        max_aid = conn.execute("SELECT COALESCE(MAX(aid), 0) FROM agents WHERE team_name = ?", (team,)).fetchone()[0]
         new_aid = max_aid + 1
 
         if not name:
@@ -609,9 +618,7 @@ async def api_add_agent(request):
             target = f"@{target}"
 
         # Ensure unique target
-        existing_t = conn.execute(
-            "SELECT 1 FROM agents WHERE team_name = ? AND target = ?", (team, target)
-        ).fetchone()
+        existing_t = conn.execute("SELECT 1 FROM agents WHERE team_name = ? AND target = ?", (team, target)).fetchone()
         if existing_t:
             target = f"{target}{new_aid}"
 
@@ -645,13 +652,15 @@ async def api_add_agent(request):
         engine.export_agents_json(conn, team)
     engine.sync_team_orchestration_doc(team)
 
-    return web.json_response({
-        "success": True,
-        "aid": new_aid,
-        "name": name,
-        "role": role,
-        "target": target,
-    })
+    return web.json_response(
+        {
+            "success": True,
+            "aid": new_aid,
+            "name": name,
+            "role": role,
+            "target": target,
+        }
+    )
 
 
 async def api_remove_agent(request):
@@ -683,9 +692,7 @@ async def api_remove_agent(request):
 
         conn.execute("DELETE FROM agents WHERE id = ?", (found["id"],))
         # Re-normalize aid sequence cleanly without losing CIDs!
-        remaining = conn.execute(
-            "SELECT id FROM agents WHERE team_name = ? ORDER BY aid ASC", (team,)
-        ).fetchall()
+        remaining = conn.execute("SELECT id FROM agents WHERE team_name = ? ORDER BY aid ASC", (team,)).fetchall()
         for idx, rem in enumerate(remaining):
             conn.execute("UPDATE agents SET aid = ?, pane = ? WHERE id = ?", (idx + 1, idx, rem["id"]))
         engine.export_agents_json(conn, team)
@@ -733,10 +740,13 @@ async def api_dispatch(request):
 async def api_restore(request):
     """Syncs SQLite state and refreshes all Brain JSONL links."""
     engine.sync_and_migrate()
-    return web.json_response({"success": True, "output": "Tüm ajan konuşma kimlikleri (Brain JSONL) ve SQLite durumları senkronize edildi."})
+    return web.json_response(
+        {"success": True, "output": "Tüm ajan konuşma kimlikleri (Brain JSONL) ve SQLite durumları senkronize edildi."}
+    )
 
 
 # ----------------- WebSocket Real-Time Brain JSONL Streamer -----------------
+
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
@@ -780,33 +790,35 @@ async def websocket_handler(request):
                     model=ag.get("model", ""),
                 )
 
-                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens',0)}|{snap['telemetry'].get('cum_total_tokens',0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}|{ag['runtime']}|{ag['model']}"
+                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens', 0)}|{snap['telemetry'].get('cum_total_tokens', 0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}|{ag['runtime']}|{ag['model']}"
                 if last_hashes.get(card_id) != state_sig:
                     last_hashes[card_id] = state_sig
-                    await ws.send_json({
-                        "type": "pane_snapshot",
-                        "agent": ag["aid"],
-                        "pane": ag["pane"],
-                        "card_id": card_id,
-                        "name": ag["name"],
-                        "role": ag["role"],
-                        "target": ag["target"],
-                        "runtime": ag["runtime"],
-                        "model": ag["model"],
-                        "cid": ag["cid"],
-                        "full_cid": cid,
-                        "persona": ag["persona"],
-                        "effort": ag["effort"],
-                        "workspace_dir": ag["workspace_dir"],
-                        "skills": ag["skills"],
-                        "tools": ag["tools"],
-                        "status": snap["status"],
-                        "content": snap["markdown"],
-                        "terminal": snap["terminal"],
-                        "thinking": snap["thinking"],
-                        "tool_calls": snap["tool_calls"],
-                        "telemetry": snap["telemetry"],
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "pane_snapshot",
+                            "agent": ag["aid"],
+                            "pane": ag["pane"],
+                            "card_id": card_id,
+                            "name": ag["name"],
+                            "role": ag["role"],
+                            "target": ag["target"],
+                            "runtime": ag["runtime"],
+                            "model": ag["model"],
+                            "cid": ag["cid"],
+                            "full_cid": cid,
+                            "persona": ag["persona"],
+                            "effort": ag["effort"],
+                            "workspace_dir": ag["workspace_dir"],
+                            "skills": ag["skills"],
+                            "tools": ag["tools"],
+                            "status": snap["status"],
+                            "content": snap["markdown"],
+                            "terminal": snap["terminal"],
+                            "thinking": snap["thinking"],
+                            "tool_calls": snap["tool_calls"],
+                            "telemetry": snap["telemetry"],
+                        }
+                    )
 
             # Lead Snapshot from Brain JSONL
             lead_snap = engine.read_brain_snapshot(
@@ -816,21 +828,23 @@ async def websocket_handler(request):
                 team_name=team_name,
                 target="@lead",
             )
-            lead_sig = f"{team['lead_runtime']}|{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens',0)}|{lead_snap['telemetry'].get('cum_total_tokens',0)}"
+            lead_sig = f"{team['lead_runtime']}|{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens', 0)}|{lead_snap['telemetry'].get('cum_total_tokens', 0)}"
             if last_hashes.get("lead") != lead_sig:
                 last_hashes["lead"] = lead_sig
-                await ws.send_json({
-                    "type": "lead_snapshot",
-                    "runtime": team["lead_runtime"] or "agy",
-                    "cid": lead_cid[:8] if lead_cid else "lead",
-                    "full_cid": lead_cid,
-                    "status": lead_snap["status"],
-                    "content": lead_snap["markdown"],
-                    "terminal": lead_snap["terminal"],
-                    "thinking": lead_snap["thinking"],
-                    "tool_calls": lead_snap["tool_calls"],
-                    "telemetry": lead_snap["telemetry"],
-                })
+                await ws.send_json(
+                    {
+                        "type": "lead_snapshot",
+                        "runtime": team["lead_runtime"] or "agy",
+                        "cid": lead_cid[:8] if lead_cid else "lead",
+                        "full_cid": lead_cid,
+                        "status": lead_snap["status"],
+                        "content": lead_snap["markdown"],
+                        "terminal": lead_snap["terminal"],
+                        "thinking": lead_snap["thinking"],
+                        "tool_calls": lead_snap["tool_calls"],
+                        "telemetry": lead_snap["telemetry"],
+                    }
+                )
 
             ledger = engine.list_tasks(team_name)
             ledger_sig = "|".join(f"{t['id']}:{t['status']}:{t['tokens']}" for t in ledger)
@@ -862,10 +876,12 @@ async def websocket_handler(request):
             tok_sig = f"{tok_analytics['total_cum_tokens']}|{tok_analytics['total_context_tokens']}"
             if last_hashes.get("tokens") != tok_sig:
                 last_hashes["tokens"] = tok_sig
-                await ws.send_json({
-                    "type": "tokens_snapshot",
-                    "tokens": tok_analytics,
-                })
+                await ws.send_json(
+                    {
+                        "type": "tokens_snapshot",
+                        "tokens": tok_analytics,
+                    }
+                )
 
             await asyncio.sleep(1.0)
     except (asyncio.CancelledError, ConnectionResetError):
@@ -889,6 +905,7 @@ LOCAL_HOSTNAMES = {"127.0.0.1", "localhost"}
 async def local_only_middleware(request, handler):
     """Blocks cross-site requests (CSRF / DNS rebinding): agents run with full shell access."""
     from urllib.parse import urlsplit
+
     host = request.host or ""
     if urlsplit(f"//{host}").hostname not in LOCAL_HOSTNAMES:
         return web.json_response({"success": False, "error": "Forbidden host"}, status=403)

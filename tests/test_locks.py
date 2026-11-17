@@ -1,4 +1,5 @@
 import os, sys, tempfile
+
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
@@ -26,13 +27,21 @@ assert any(l["scope"] == "hiveforge" and l["agent"] == "@a" for l in server.scan
 engine.find_interactive_tmux_pane = lambda **k: None
 engine.ROTATE_TOKENS = 0
 engine._cum_tokens = lambda *a: 0
+
+
 async def fake_turn(*a):
     assert engine.list_file_locks("t"), "tur sürerken kilit durmalı"
     return True, "", "ok"
+
+
 engine.execute_headless_agent_turn = fake_turn
+
+
 async def main():
     await engine.dispatch_message("t", "@a", "iş")
     await asyncio.sleep(0.3)
+
+
 asyncio.run(main())
 assert engine.list_file_locks("t") == [], engine.list_file_locks("t")
 print("OK")

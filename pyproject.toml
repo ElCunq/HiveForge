@@ -1,0 +1,6 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+# tests set AGY_TEAMS_DIR before importing engine, so the import can't be at the top
+"tests/*" = ["E402"]

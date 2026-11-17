@@ -1,4 +1,5 @@
 import os, sys, tempfile
+
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import asyncio
@@ -14,11 +15,16 @@ engine.ROTATE_TOKENS = 0
 spent = {"acid": 1000, "leadcid": 0}
 engine._cum_tokens = lambda team, target, runtime, model, cid: spent.get(cid, 0)
 calls = []
+
+
 async def fake_turn(team, target, runtime, model, cid, wdir, persona, effort, mode, prompt, is_lead, hops=0):
     calls.append((target, prompt))
     spent[cid] = spent.get(cid, 0) + (4200 if target == "@a" else 10)
     return True, cid, f"{target} bitti"
+
+
 engine.execute_headless_agent_turn = fake_turn
+
 
 async def main():
     r = await engine.dispatch_message("t", "@a", "## Görev: Arama sayfasını düzelt\ndetaylar...", sender="@lead")
@@ -50,4 +56,6 @@ async def main():
         all_ids = [x["id"] for x in (await (await cl.get("/api/team/t/ledger?all=1")).json())["tasks"]]
     assert retry_id not in open_ids and tid in open_ids and retry_id in all_ids, (open_ids, all_ids)
     print("OK")
+
+
 asyncio.run(main())

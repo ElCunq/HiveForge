@@ -1,4 +1,5 @@
 import os, sys, tempfile
+
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import asyncio
@@ -10,8 +11,13 @@ with engine.get_db() as c:
     c.execute("INSERT INTO agents (team_name, aid, name, role, target) VALUES ('anikuro', 1, 'S', 'r', '@server')")
 
 calls = []
+
+
 async def fake_dispatch(team, to, msg, sender, msg_type, hops):
-    calls.append((to, msg, sender, hops)); return {"success": True}
+    calls.append((to, msg, sender, hops))
+    return {"success": True}
+
+
 engine.dispatch_message = fake_dispatch
 
 out = "Bitti.\n/btw @lead Testler yeşil, deploy hazır.\n  /btw @web: endpoint değişti\n/btw @server kendime not\nmetin /btw @x satır içi değil"
