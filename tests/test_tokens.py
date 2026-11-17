@@ -1,4 +1,6 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))

@@ -1,10 +1,14 @@
-import os, sys, tempfile, types
+import os
+import sys
+import tempfile
+import types
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "bin"))
-import engine, hive
+import engine
+import hive
 
 # note --from and agent identity from HIVE_AGENT
 sent = {}

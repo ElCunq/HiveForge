@@ -1,6 +1,9 @@
 """Runs every tests/test_*.py in its own process with a fresh, throwaway HiveForge data dir."""
 
-import os, sys, subprocess, tempfile
+import os
+import sys
+import subprocess
+import tempfile
 from pathlib import Path
 
 failed = []

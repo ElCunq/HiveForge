@@ -1,4 +1,6 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -6,7 +8,8 @@ import asyncio
 
 os.environ["AGY_TEAMS_DIR"] = tempfile.mkdtemp()
 os.environ["HIVE_TURN_TIMEOUT"] = "0.5"
-import engine, time
+import engine
+import time
 
 engine.init_db()
 with engine.get_db() as c:

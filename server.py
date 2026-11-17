@@ -12,7 +12,6 @@ import logging
 import json
 import time
 import asyncio
-import subprocess
 import re
 from pathlib import Path
 from datetime import datetime
@@ -35,8 +34,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 def scan_team_locks(team_name: str, project_dir: str):
     locks = [
-        {"file": l["path"], "agent": l["agent"], "time": l["created_at"], "scope": "hiveforge"}
-        for l in engine.list_file_locks(team_name)
+        {"file": lk["path"], "agent": lk["agent"], "time": lk["created_at"], "scope": "hiveforge"}
+        for lk in engine.list_file_locks(team_name)
     ]
     team_lock_file = TEAMS_DIR / team_name / "locks.json"
     if team_lock_file.exists():
@@ -51,7 +50,7 @@ def scan_team_locks(team_name: str, project_dir: str):
                         "scope": "team",
                     }
                 )
-        except Exception:
+        except (OSError, ValueError, AttributeError):
             pass
 
     pdir = Path(project_dir) if project_dir else None
@@ -71,7 +70,7 @@ def scan_team_locks(team_name: str, project_dir: str):
                                 "scope": sub.name,
                             }
                         )
-                except Exception:
+                except (OSError, ValueError, AttributeError):
                     pass
     return locks
 
@@ -96,7 +95,7 @@ def extract_project_brain(project_dir: str, team_name: str):
                             sections[current_sec] = []
                     elif current_sec in sections:
                         sections[current_sec].append(line)
-            except Exception:
+            except (OSError, ValueError):
                 pass
     result = []
     for title, lines in sections.items():
@@ -117,7 +116,7 @@ def extract_kanban_tasks(project_dir: str, team_name: str):
                 data = json.loads(c.read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     tasks.extend(data)
-            except Exception:
+            except (OSError, ValueError):
                 pass
         elif c.exists() and c.suffix == ".md":
             try:
@@ -136,7 +135,7 @@ def extract_kanban_tasks(project_dir: str, team_name: str):
                         else:
                             st = "todo"
                         tasks.append({"title": title, "status": st, "source": c.name})
-            except Exception:
+            except (OSError, ValueError):
                 pass
     return tasks[:35]
 
@@ -276,7 +275,7 @@ async def api_configure_agent(request):
     """Updates an agent's skills, tools, persona, effort, workspace_dir, role, or CID in SQLite."""
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team")
@@ -347,7 +346,7 @@ async def api_create_tool(request):
     """Registers a new reusable custom tool in SQLite tools_registry."""
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     tid = re.sub(r"[^a-z0-9_-]", "-", data.get("id", "").strip().lower()) or f"tool-{int(datetime.now().timestamp())}"
@@ -378,7 +377,7 @@ async def api_create_tool(request):
 async def api_delete_tool(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
     tid = data.get("id", "")
     with engine.get_db() as conn:
@@ -391,7 +390,7 @@ async def api_run_tool(request):
     """Runs a tool either standalone (preview output) or dispatches its result to an agent."""
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team") or engine.default_team()
@@ -453,7 +452,7 @@ async def api_review_task(request):
     try:
         data = await request.json()
         task_id = int(data.get("id"))
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"success": False, "error": "Geçersiz istek (team, id, decision gerekli)"}, status=400)
     decision = str(data.get("decision", "")).lower()
     if decision not in ("approve", "reject", "onay", "ret"):
@@ -475,7 +474,7 @@ async def api_get_inbox(request):
 async def api_create_inbox(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
     if not data.get("team") or not str(data.get("message", "")).strip():
         return web.json_response({"success": False, "error": "team ve message gerekli"}, status=400)
@@ -487,7 +486,7 @@ async def api_answer_inbox(request):
     try:
         data = await request.json()
         item_id = int(data.get("id"))
-    except Exception:
+    except (ValueError, TypeError):
         return web.json_response({"success": False, "error": "Geçersiz istek (team, id gerekli)"}, status=400)
     res = await engine.answer_inbox(data.get("team", ""), item_id, data.get("answer", ""))
     return web.json_response(res, status=200 if res.get("success") else 400)
@@ -496,7 +495,7 @@ async def api_answer_inbox(request):
 async def api_send_note(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team")
@@ -521,7 +520,7 @@ async def api_send_note(request):
 async def api_create_team(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     name = re.sub(r"[^a-z0-9_-]", "-", data.get("name", "").strip().lower())
@@ -579,7 +578,7 @@ async def api_create_team(request):
 async def api_add_agent(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team")
@@ -628,7 +627,8 @@ async def api_add_agent(request):
         conn.execute(
             """
             INSERT INTO agents
-            (team_name, aid, name, role, target, cid, runtime, model, persona, effort, mode, workspace_dir, skills_json, tools_json, pane, created_at)
+            (team_name, aid, name, role, target, cid, runtime, model, persona, effort, mode, workspace_dir,
+             skills_json, tools_json, pane, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?, ?, ?, ?)
             """,
             (
@@ -666,7 +666,7 @@ async def api_add_agent(request):
 async def api_remove_agent(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team")
@@ -704,7 +704,7 @@ async def api_remove_agent(request):
 async def api_quota_resume(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
     if not data.get("team"):
         return web.json_response({"success": False, "error": "team is required"}, status=400)
@@ -714,7 +714,7 @@ async def api_quota_resume(request):
 async def api_dispatch(request):
     try:
         data = await request.json()
-    except Exception:
+    except ValueError:
         return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
     team = data.get("team")
@@ -790,7 +790,12 @@ async def websocket_handler(request):
                     model=ag.get("model", ""),
                 )
 
-                state_sig = f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{snap['telemetry']['steps']}|{snap['telemetry'].get('context_tokens', 0)}|{snap['telemetry'].get('cum_total_tokens', 0)}|{ag['name']}|{len(ag['tools'])}|{len(ag['skills'])}|{ag['runtime']}|{ag['model']}"
+                tel = snap["telemetry"]
+                state_sig = (
+                    f"{snap['status']}|{len(snap['markdown'])}|{len(snap['terminal'])}|{tel['steps']}|"
+                    f"{tel.get('context_tokens', 0)}|{tel.get('cum_total_tokens', 0)}|{ag['name']}|"
+                    f"{len(ag['tools'])}|{len(ag['skills'])}|{ag['runtime']}|{ag['model']}"
+                )
                 if last_hashes.get(card_id) != state_sig:
                     last_hashes[card_id] = state_sig
                     await ws.send_json(
@@ -828,7 +833,12 @@ async def websocket_handler(request):
                 team_name=team_name,
                 target="@lead",
             )
-            lead_sig = f"{team['lead_runtime']}|{lead_snap['status']}|{len(lead_snap['markdown'])}|{len(lead_snap['terminal'])}|{lead_snap['telemetry']['steps']}|{lead_snap['telemetry'].get('context_tokens', 0)}|{lead_snap['telemetry'].get('cum_total_tokens', 0)}"
+            ltel = lead_snap["telemetry"]
+            lead_sig = (
+                f"{team['lead_runtime']}|{lead_snap['status']}|{len(lead_snap['markdown'])}|"
+                f"{len(lead_snap['terminal'])}|{ltel['steps']}|{ltel.get('context_tokens', 0)}|"
+                f"{ltel.get('cum_total_tokens', 0)}"
+            )
             if last_hashes.get("lead") != lead_sig:
                 last_hashes["lead"] = lead_sig
                 await ws.send_json(
@@ -853,7 +863,7 @@ async def websocket_handler(request):
                 await ws.send_json({"type": "tasks_snapshot", "tasks": ledger})
 
             locks = scan_team_locks(team_name, team["project_dir"])
-            locks_sig = "|".join(f"{l['file']}:{l['agent']}" for l in locks)
+            locks_sig = "|".join(f"{lk['file']}:{lk['agent']}" for lk in locks)
             if last_hashes.get("locks") != locks_sig:
                 last_hashes["locks"] = locks_sig
                 await ws.send_json({"type": "locks_snapshot", "locks": locks})
@@ -888,12 +898,12 @@ async def websocket_handler(request):
         pass
     except Exception as e:
         if "closing transport" not in str(e).lower() and "reset" not in str(e).lower():
-            logging.warning(f"WebSocket client disconnected: {e}")
+            logging.warning("WebSocket client disconnected: %s", e, exc_info=True)
     finally:
         try:
             await ws.close()
         except Exception:
-            pass
+            logging.debug("WebSocket close failed", exc_info=True)
 
     return ws
 
@@ -962,7 +972,7 @@ if __name__ == "__main__":
         for stream in (sys.stdout, sys.stderr):
             try:
                 stream.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
+            except (AttributeError, OSError):
                 pass
     app = create_app()
     print("==================================================================")

@@ -1,11 +1,17 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "bin"))
-import asyncio, io, contextlib
-import engine, server, hive
+import asyncio
+import io
+import contextlib
+import engine
+import server
+import hive
 from aiohttp.test_utils import TestClient, TestServer
 
 engine.init_db()
@@ -27,7 +33,10 @@ engine.execute_headless_agent_turn = fake_turn
 async def main():
     async with TestClient(TestServer(server.create_app(), host="127.0.0.1")) as cl:
         h = {"Origin": f"http://127.0.0.1:{cl.port}"}
-        post = lambda path, body: cl.post(path, json=body, headers=h)
+
+        def post(path, body):
+            return cl.post(path, json=body, headers=h)
+
         q = await (
             await post(
                 "/api/inbox", {"team": "t", "sender": "@lead", "kind": "question", "message": "Deploy edeyim mi?"}

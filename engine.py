@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 AGY-VIBE Multi-Agent Orchestrator (Universal Multi-CLI Engine):
-- Multi-CLI Runtime Support: Google Antigravity (`agy`), Anthropic (`claude`), `aider`, `ollama` (Local LLM), and Custom Scripts
+- Multi-CLI Runtime Support: Google Antigravity (`agy`), Anthropic (`claude`), `aider`,
+  `ollama` (Local LLM), and Custom Scripts
 - SQLite Atomic State Store (~/.agy-teams/state.db)
 - Dual Snapshot Engine: Native Brain JSONL (agy) + SQLite Agent Turns (claude/aider/ollama/custom)
 - Extensible Tool, Skill, Persona & MCP Hub
 - 100% Portable (Zero hardcoded user paths)
 """
 
+import logging
 import os
 import re
-import sys
 import json
 import time
 import uuid
@@ -88,7 +89,8 @@ HANDOFF_PROMPT = (
     "Şimdi kod değiştirme. Sadece {mem} dosyasını (yoksa oluştur) şu başlıklarla güncelle, en fazla ~1500 kelime: "
     "1) Rol ve sorumluluk alanın, 2) Tamamlanan işler ve alınan kararlar (neden), 3) Değiştirilen önemli dosyalar, "
     "4) Kritik detaylar/kısıtlar ve açık sorunlar, 5) Devam eden iş ve bir sonraki adım. "
-    "Projenin kendi hafıza protokolü (ör. TEAM_MEMORY.md, history/) varsa onu da güncelle. Bitince sadece 'DEVİR TAMAM' yaz."
+    "Projenin kendi hafıza protokolü (ör. TEAM_MEMORY.md, history/) "
+    "varsa onu da güncelle. Bitince sadece 'DEVİR TAMAM' yaz."
 )
 BTW_LINE_RE = re.compile(r"^\s*/btw\s+(@[\w.-]+)\s*[:\-]?\s*(.+)$", re.MULTILINE)
 
@@ -154,7 +156,7 @@ def resolve_cli_command(cmd: List[str]) -> List[str]:
                 node_exe = str(node) if node.exists() else shutil.which("node")
                 if node_exe:
                     return [node_exe, str(target), *cmd[1:]]
-        except Exception:
+        except OSError:
             pass
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         return [comspec, "/d", "/s", "/c", exe, *[_flatten_for_cmd(a) for a in cmd[1:]]]
@@ -392,7 +394,8 @@ def seed_builtin_tools(conn: sqlite3.Connection) -> None:
             "security",
             "Ajanı security-audit yeteneği ile çalıştırarak son kodlarda güvenlik açığı tarar.",
             "prompt_template",
-            "[ARAÇ: security-audit] Üzerinde çalıştığın modüldeki son değişiklikleri OWASP Top 10, yetkilendirme, XSS/Injection ve veri sızıntısı açısından denetle ve bulguları raporla.",
+            "[ARAÇ: security-audit] Üzerinde çalıştığın modüldeki son değişiklikleri OWASP Top 10, "
+            "yetkilendirme, XSS/Injection ve veri sızıntısı açısından denetle ve bulguları raporla.",
             "🛡️",
             1,
         ),
@@ -402,7 +405,8 @@ def seed_builtin_tools(conn: sqlite3.Connection) -> None:
             "quality",
             "Gereksiz karmaşıklığı, ölü kodları ve aşırı mühendisliği (over-engineering) tespit eder.",
             "prompt_template",
-            "[ARAÇ: ponytail-review] Son yazdığın kodları incele; gereksiz soyutlamaları, tekrarları ve karmaşık blokları en sade ve temiz standart kütüphane yöntemleriyle sadeleştir.",
+            "[ARAÇ: ponytail-review] Son yazdığın kodları incele; gereksiz soyutlamaları, tekrarları "
+            "ve karmaşık blokları en sade ve temiz standart kütüphane yöntemleriyle sadeleştir.",
             "✂️",
             1,
         ),
@@ -412,7 +416,8 @@ def seed_builtin_tools(conn: sqlite3.Connection) -> None:
             "quality",
             "Doğruluk, okunabilirlik, mimari, güvenlik ve performans eksenlerinde kod incelemesi başlatır.",
             "prompt_template",
-            "[ARAÇ: code-review-and-quality] Çalışma alanındaki son değişiklikleri Doğruluk, Mimari, Güvenlik ve Performans açısından incele, varsa hataları düzelt.",
+            "[ARAÇ: code-review-and-quality] Çalışma alanındaki son değişiklikleri Doğruluk, "
+            "Mimari, Güvenlik ve Performans açısından incele, varsa hataları düzelt.",
             "🔍",
             1,
         ),
@@ -422,7 +427,8 @@ def seed_builtin_tools(conn: sqlite3.Connection) -> None:
             "orchestration",
             "Ajanın tamamladığı görevleri ortak proje hafızasına (TEAM_MEMORY.md) işlemesini sağlar.",
             "prompt_template",
-            "Tamamladığın son görevleri ve mimari durumu TEAM_MEMORY.md dosyasındaki kendi satırına ve ilgili history/ raporuna kaydet.",
+            "Tamamladığın son görevleri ve mimari durumu TEAM_MEMORY.md "
+            "dosyasındaki kendi satırına ve ilgili history/ raporuna kaydet.",
             "🧠",
             1,
         ),
@@ -431,7 +437,8 @@ def seed_builtin_tools(conn: sqlite3.Connection) -> None:
     for tid, name, cat, desc, ttype, cmd, icon, is_b in builtin_tools:
         conn.execute(
             """
-            INSERT INTO tools_registry (id, name, category, description, tool_type, command_or_prompt, icon, is_builtin, created_at)
+            INSERT INTO tools_registry
+            (id, name, category, description, tool_type, command_or_prompt, icon, is_builtin, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
@@ -496,7 +503,7 @@ def sync_and_migrate() -> None:
                     if afile.exists():
                         try:
                             saved = json.loads(afile.read_text(encoding="utf-8"))
-                        except Exception:
+                        except (OSError, ValueError):
                             saved = []
                     if not saved:
                         saved = [
@@ -545,7 +552,8 @@ def sync_and_migrate() -> None:
                         conn.execute(
                             """
                             INSERT OR IGNORE INTO agents
-                            (team_name, aid, name, role, target, runtime, model, cid, workspace_dir, skills_json, tools_json, pane, created_at)
+                            (team_name, aid, name, role, target, runtime, model, cid, workspace_dir,
+                             skills_json, tools_json, pane, created_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
@@ -636,10 +644,10 @@ def read_tail_jsonl(file_path: Path, max_bytes: int = 650_000, max_steps: int = 
                 continue
             try:
                 steps.append(json.loads(line))
-            except Exception:
+            except ValueError:
                 continue
         return steps
-    except Exception:
+    except OSError:
         return []
 
 
@@ -778,7 +786,9 @@ def _read_brain_snapshot_uncached(
         if not rows:
             return {
                 "status": "working" if is_subproc_running else "idle",
-                "markdown": f"*[{runtime.upper()} Ajanı Hazır]*\n\nKomut göndermek için aşağıdaki çubuğu kullanabilirsiniz.",
+                "markdown": (
+                    f"*[{runtime.upper()} Ajanı Hazır]*\n\nKomut göndermek için aşağıdaki çubuğu kullanabilirsiniz."
+                ),
                 "terminal": f"Runtime: {runtime}\nWaiting for turn execution...",
                 "thinking": "",
                 "tool_calls": [],
@@ -814,7 +824,7 @@ def _read_brain_snapshot_uncached(
             if r["tool_calls_json"]:
                 try:
                     recent_tools.extend(json.loads(r["tool_calls_json"]))
-                except Exception:
+                except (ValueError, TypeError):
                     pass
 
         for r in rows:
@@ -926,9 +936,9 @@ def _read_brain_snapshot_uncached(
                             cum_in += d.get("input_tokens", 0)
                             cum_cache += d.get("cache_read_tokens", 0)
                             cum_out += d.get("output_tokens", 0)
-                        except Exception:
+                        except (ValueError, AttributeError, TypeError):
                             pass
-        except Exception:
+        except OSError:
             pass
 
     steps = read_tail_jsonl(target_file, max_bytes=650_000, max_steps=140)
@@ -976,7 +986,7 @@ def _read_brain_snapshot_uncached(
             mtime = target_file.stat().st_mtime
             if (time.time() - mtime) < 180:
                 status = "working"
-        except Exception:
+        except OSError:
             pass
 
     md_sections: List[str] = []
@@ -1105,13 +1115,13 @@ def find_interactive_tmux_pane(cid: str = "", target: str = "") -> Optional[str]
                             return pane_by_pid[ppid]
                         if pid in pane_by_pid:
                             return pane_by_pid[pid]
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return None
 
 
 def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
-    """Generates and syncs TEAM_ORCHESTRATION.md in the project directory so all agents know the team, roles, and rules."""
+    """Generates and syncs TEAM_ORCHESTRATION.md in the project dir so all agents know the team, roles and rules."""
     pdir = None
     if project_dir and Path(project_dir).exists():
         pdir = Path(project_dir)
@@ -1131,7 +1141,7 @@ def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
 
     doc_lines = [
         f"# 🐝 HiveForge Takım Orkestrasyonu: {team_name.upper()}",
-        f"> Bu proje **HiveForge** otonom çoklu ajan (Multi-Agent) sistemi tarafından yönetilmektedir.",
+        "> Bu proje **HiveForge** otonom çoklu ajan (Multi-Agent) sistemi tarafından yönetilmektedir.",
         "",
         "## 👥 Takım Yapısı ve Roller",
         f"- **Tech Lead (`@lead`)**: {team['lead_role']} [CLI: {(team['lead_runtime'] or 'agy').upper()}]",
@@ -1144,13 +1154,18 @@ def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
         [
             "",
             "## 📡 Ajanlar Arası İletişim Kuralları",
-            f'1. **Görev Dağıtımı**: `team dispatch {team_name} @hedef "görev"`. Görev bitince sonuç, görevi veren ajana otomatik not olarak gelir; bekleme/poll yapmayın.',
-            f'2. **Bilgi Notu (`/btw`)**: Cevapta ayrı satırda `/btw @hedef mesaj` yazın ya da `team note {team_name} @hedef "mesaj"` çalıştırın; HiveForge iletir.',
-            "3. **Çakışma ve Dosya Kilitleri**: Ortak repoda başka bir ajanın değiştirdiği dosyaları ezmemek için `.locks/locks.json` dosyasını kontrol edin.",
-            "4. **Hafıza**: Her ajanın kalıcı hafızası `.hive/memory/<ajan>.md`. Bağlam büyüyünce HiveForge ajana özet yazdırıp yeni oturum açar.",
+            f'1. **Görev Dağıtımı**: `team dispatch {team_name} @hedef "görev"`. Görev bitince '
+            "sonuç, görevi veren ajana otomatik not olarak gelir; bekleme/poll yapmayın.",
+            "2. **Bilgi Notu (`/btw`)**: Cevapta ayrı satırda `/btw @hedef mesaj` yazın "
+            f'ya da `team note {team_name} @hedef "mesaj"` çalıştırın; HiveForge iletir.',
+            "3. **Çakışma ve Dosya Kilitleri**: Ortak repoda başka bir ajanın değiştirdiği "
+            "dosyaları ezmemek için `.locks/locks.json` dosyasını kontrol edin.",
+            "4. **Hafıza**: Her ajanın kalıcı hafızası `.hive/memory/<ajan>.md`. "
+            "Bağlam büyüyünce HiveForge ajana özet yazdırıp yeni oturum açar.",
             "",
             "## 🪙 Token Kuralları",
-            "- Komut çıktısını sınırla (`| tail -n 40`, `grep`), derleme/testleri sessiz çalıştır, sadece hataları oku.",
+            "- Komut çıktısını sınırla (`| tail -n 40`, `grep`), "
+            "derleme/testleri sessiz çalıştır, sadece hataları oku.",
             "- Dosyayı bütün okuma: önce `grep -n` / `graphify query`, sonra ilgili satır aralığı.",
             "- `sleep`, `tmux capture-pane`, tekrar tekrar durum sorgulama yok.",
             "- Cevaplar kısa: değişen dosyalar, sonuç, sonraki adım.",
@@ -1164,7 +1179,7 @@ def sync_team_orchestration_doc(team_name: str, project_dir: str = ""):
     try:
         if not doc.is_symlink() and (not doc.exists() or doc.read_text(encoding="utf-8") != content):
             doc.write_text(content, encoding="utf-8")
-    except Exception:
+    except (OSError, ValueError):
         pass
 
 
@@ -1322,7 +1337,8 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         lead_rule = (
             f"• LİDER KURALI: Dağıt, denetle, deploy et, kullanıcıyla konuş. Kod/derleme/test/ssh/curl KENDİN YAPMA: "
             f'`team dispatch {team_name} @hedef "görev"`. Görevleri tek turda dağıt, turu bitir; hepsi bitince tek '
-            f"'GÖREVLER BİTTİ' raporu gelir. Deploy: `team review` onayı, sonra `team deploy {team_name} --tasks <id,...> -- <komut>`.\n"
+            "'GÖREVLER BİTTİ' raporu gelir. Deploy: `team review` onayı, "
+            f"sonra `team deploy {team_name} --tasks <id,...> -- <komut>`.\n"
         )
 
         if not first_turn:
@@ -1331,7 +1347,10 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
                 "Token kuralları: ara adımlarda anlatım yok, hedefli okuma, poll yok. 3 satır sınırı SANA uygulanmaz: "
                 "kullanıcıya son cevabın şablonsuz, açıklayıcı bir sohbet olsun.\n"
                 if is_lead
-                else "Token kuralları geçerli: minimal çıktı (düşünce/plan/teknoloji anlatma), hedefli okuma, poll yok, teşekkür/onay notu yok.\n"
+                else (
+                    "Token kuralları geçerli: minimal çıktı (düşünce/plan/teknoloji anlatma), hedefli okuma, poll yok, "
+                    "teşekkür/onay notu yok.\n"
+                )
             )
             return ctx_prefix + "--------------------------------------------------\n" + user_prompt
 
@@ -1347,43 +1366,59 @@ def build_agent_orchestration_prompt(team_name: str, target: str, user_prompt: s
         ctx_prefix = (
             f"[HIVEFORGE AGENT ORKESTRASYON BAĞLAMI]\n"
             f"• Takım: {team_name} | Senin Rolün: {target} | Takım Arkadaşların: {teammates_str}\n"
-            f"• İletişim: Başka ajana yalnızca gerçekten gerekli bir soru/bilgi için cevabına ayrı satırda `/btw @hedef mesaj` yaz "
-            f'(veya `team note {team_name} @hedef "mesaj"`). Konuşma 1 soru + 1 cevaptır; cevaba cevap HiveForge tarafından '
+            "• İletişim: Başka ajana yalnızca gerçekten gerekli bir "
+            "soru/bilgi için cevabına ayrı satırda `/btw @hedef mesaj` yaz "
+            f'(veya `team note {team_name} @hedef "mesaj"`). Konuşma '
+            "1 soru + 1 cevaptır; cevaba cevap HiveForge tarafından "
             f"iletilmez. Teşekkür, 'not alındı', 'tamam' gibi notlar YAZMA. Görev sonucunu lead'e not olarak yollama: "
             f"HiveForge tüm görevler bitince lead'e tek rapor gönderir.\n"
-            f"• Hafıza: {mem_str} senin kalıcı hafızan. Varsa İLK İŞ onu oku. Önemli bir karar/aşama bitince kısaca güncelle "
+            f"• Hafıza: {mem_str} senin kalıcı hafızan. Varsa İLK İŞ "
+            "onu oku. Önemli bir karar/aşama bitince kısaca güncelle "
             f"(projenin kendi hafıza protokolü varsa ona da uy). Bağlamın büyüyünce HiveForge seni yeni oturuma taşır; "
             f"tek köprü bu dosyadır.\n"
             f"• TOKEN KURALLARI (her adımda tüm bağlam yeniden okunur, israf çarpılarak büyür):\n"
-            f"  1. Komut çıktısını sınırla: uzun çıktılara `| tail -n 40`, `| head`, `grep` ekle; derleme/testleri sessiz çalıştır, "
+            "  1. Komut çıktısını sınırla: uzun çıktılara `| tail -n 40`, "
+            "`| head`, `grep` ekle; derleme/testleri sessiz çalıştır, "
             f"sadece hataları oku (ör. `cargo check -q 2>&1 | tail -n 30`).\n"
-            f"  2. Dosyayı bütün okuma: önce `grep -n` / `graphify query` ile yeri bul, sonra sadece ilgili satır aralığını oku; "
+            "  2. Dosyayı bütün okuma: önce `grep -n` / `graphify query` "
+            "ile yeri bul, sonra sadece ilgili satır aralığını oku; "
             f"aynı dosyayı tekrar tekrar okuma.\n"
-            f"  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar tekrar `team agents` yok. `team dispatch` ile verdiğin "
+            "  3. Bekleme/poll yapma: `sleep`, `tmux capture-pane`, tekrar "
+            "tekrar `team agents` yok. `team dispatch` ile verdiğin "
             f"görevler bitince sonuç HiveForge'dan otomatik gelir; turunu bitir.\n"
             + (
-                f"  4. ARA ADIMLARDA ANLATIM YAPMA (her adım bağlamı yeniden okutur). Ama kullanıcıya verdiğin SON CEVAP normal bir "
-                f"sohbettir: soruyu tam cevapla; ne yapıldı, neden, durum, riskler, senin önerin ve sonraki adım. Şablon "
-                f"('Değişen dosyalar/Sonuç/Engel') kullanma. Rapor/özet istenirse içeriği cevaba yaz, dosyaya yazıp link verme.\n"
+                "  4. ARA ADIMLARDA ANLATIM YAPMA (her adım bağlamı yeniden "
+                "okutur). Ama kullanıcıya verdiğin SON CEVAP normal bir "
+                "sohbettir: soruyu tam cevapla; ne yapıldı, neden, "
+                "durum, riskler, senin önerin ve sonraki adım. Şablon "
+                "('Değişen dosyalar/Sonuç/Engel') kullanma. Rapor/özet "
+                "istenirse içeriği cevaba yaz, dosyaya yazıp link verme.\n"
                 if is_lead
-                else f"  4. MİNİMAL ÇIKTI: düşünce sürecini, planını, kullandığın teknolojileri/açıklamaları yazma; adımlar arasında "
-                f"anlatım yapma. Son cevap en fazla 3 satır: değişen dosyalar, sonuç (✓/✗), varsa engel. Rapor/tablo/özet yok.\n"
+                else (
+                    "  4. MİNİMAL ÇIKTI: düşünce sürecini, planını, kullandığın teknolojileri/açıklamaları yazma; "
+                    "adımlar arasında anlatım yapma. Son cevap en fazla 3 satır: değişen "
+                    "dosyalar, sonuç (✓/✗), varsa engel. Rapor/tablo/özet yok.\n"
+                )
             )
             + (
-                f"• Dosya kilidi: değiştireceğin dosyaları önce `team lock {team_name} <dosya...>` ile kilitle. Başkasında kilitliyse "
+                "• Dosya kilidi: değiştireceğin dosyaları önce `team lock "
+                f"{team_name} <dosya...>` ile kilitle. Başkasında kilitliyse "
                 f"dokunma, sahibine `/btw` yaz. Görev turun bitince kilitlerin otomatik açılır.\n"
-                f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
+                f"• HiveForge'un kendi kodu ({PROJECT_ROOT}) ve ~/.agy-teams "
+                "senin çalışma alanın değil: bunları DEĞİŞTİRME.\n"
             )
         )
         if is_lead:
             ctx_prefix += lead_rule
             ctx_prefix += (
-                f'• Kullanıcıyla iletişim: karar/onay gerekince `team ask-user {team_name} "soru"` (cevap sana not olarak gelir), '
+                "• Kullanıcıyla iletişim: karar/onay gerekince `team "
+                f'ask-user {team_name} "soru"` (cevap sana not olarak gelir), '
                 f'önemli durum bildirimi için `team tell-user {team_name} "mesaj"`. Bunları uzun cevap metnine gömme.\n'
             )
         ctx_prefix += "--------------------------------------------------\n"
         return ctx_prefix + user_prompt
     except Exception:
+        logging.exception("orchestration prompt build failed for %s:%s", team_name, target)
         return user_prompt
 
 
@@ -1391,7 +1426,8 @@ SHIMS_DIR = PROJECT_ROOT / "bin" / "shims"
 
 
 def _agent_env(team_name: str, target: str, hops: int = 0) -> Dict[str, str]:
-    """Agents know who they are (result callbacks, deploy gate), how deep in a conversation they are, and get the shims."""
+    """Agents know who they are (result callbacks, deploy gate), how deep in a conversation they are,
+    and get the shims."""
     env = {**os.environ, "HIVE_TEAM": team_name, "HIVE_AGENT": target, "HIVE_HOPS": str(hops)}
     env.pop("HIVE_DEPLOY", None)
     if not IS_WINDOWS:  # ponytail: shims are bash; Windows agents are not gated
@@ -1431,7 +1467,8 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
             return 1
         rows = (
             conn.execute(
-                f"SELECT id, status FROM dispatch_queue WHERE team_name = ? AND id IN ({','.join('?' * len(task_ids))})",
+                "SELECT id, status FROM dispatch_queue WHERE team_name "
+                f"= ? AND id IN ({','.join('?' * len(task_ids))})",
                 (team_name, *task_ids),
             ).fetchall()
             if task_ids
@@ -1445,18 +1482,23 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
     not_ready = [f"#{i} ({found.get(i, 'yok')})" for i in task_ids if found.get(i) != "approved"]
     if not_ready and not force:
         print(
-            f"[HiveForge] Deploy reddedildi: şu görevler onaylı değil: {', '.join(not_ready)}. Önce `team review` ile denetle (ya da --force)."
+            "[HiveForge] Deploy reddedildi: şu görevler onaylı değil: "
+            f"{', '.join(not_ready)}. Önce `team review` ile denetle (ya da --force)."
         )
         return 1
     if pending and not task_ids:
         print(f"[UYARI] İnceleme bekleyen görevler var: {', '.join(f'#{r[0]} {r[1]}' for r in pending)}")
 
     cmd_str = " ".join(command)
-    now = lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def now():
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     with deploy_lock():
         with get_db() as conn:
             dep_id = conn.execute(
-                "INSERT INTO deploys (team_name, command, requested_by, task_ids, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)",
+                "INSERT INTO deploys (team_name, command, requested_by, "
+                "task_ids, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)",
                 (team_name, cmd_str, requested_by, ",".join(map(str, task_ids)), now()),
             ).lastrowid
         print(f"[HiveForge] Deploy #{dep_id} başlıyor: {cmd_str}", flush=True)
@@ -1484,7 +1526,8 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
             )
             if code == 0 and task_ids:
                 conn.execute(
-                    f"UPDATE dispatch_queue SET status = 'deployed', updated_at = ? WHERE team_name = ? AND status = 'approved' "
+                    "UPDATE dispatch_queue SET status = 'deployed', updated_at "
+                    "= ? WHERE team_name = ? AND status = 'approved' "
                     f"AND id IN ({','.join('?' * len(task_ids))})",
                     (now(), team_name, *task_ids),
                 )
@@ -1492,7 +1535,7 @@ def run_deploy(team_name: str, command: List[str], requested_by: str, task_ids: 
     add_inbox(
         team_name,
         requested_by,
-        f"Deploy #{dep_id} {verdict}: {cmd_str}" + (f"\n" + "\n".join(tail[-8:]) if code else ""),
+        f"Deploy #{dep_id} {verdict}: {cmd_str}" + ("\n" + "\n".join(tail[-8:]) if code else ""),
     )
     print(f"[HiveForge] Deploy #{dep_id}: {verdict}")
     return code
@@ -1532,7 +1575,8 @@ def _quota_alert(team_name: str, target: str, output: str) -> None:
     """Provider quota (429) hit: tell the user once while the alert is unread, instead of failing silently per turn."""
     with get_db() as conn:
         if conn.execute(
-            "SELECT 1 FROM inbox WHERE team_name = ? AND sender = 'HiveForge' AND status = 'open' AND message LIKE 'Model kotası doldu%'",
+            "SELECT 1 FROM inbox WHERE team_name = ? AND sender = 'HiveForge' "
+            "AND status = 'open' AND message LIKE 'Model kotası doldu%'",
             (team_name,),
         ).fetchone():
             return
@@ -1566,7 +1610,8 @@ def lock_files(team_name: str, agent: str, paths: List[str]) -> Dict[str, Any]:
             {
                 r["path"]: r["agent"]
                 for r in conn.execute(
-                    f"SELECT path, agent FROM file_locks WHERE team_name = ? AND path IN ({','.join('?' * len(paths))})",
+                    "SELECT path, agent FROM file_locks WHERE team_name "
+                    f"= ? AND path IN ({','.join('?' * len(paths))})",
                     (team_name, *paths),
                 ).fetchall()
             }
@@ -1846,7 +1891,8 @@ async def execute_headless_agent_turn(
                 conn.execute(
                     """
                     INSERT INTO agent_turns
-                    (team_name, target, runtime, user_prompt, response_md, command_logs, status, created_at, input_tokens, output_tokens, total_tokens)
+                    (team_name, target, runtime, user_prompt, response_md, command_logs, status, created_at,
+                     input_tokens, output_tokens, total_tokens)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -1907,7 +1953,7 @@ async def dispatch_message(
                         tool_out = (
                             out_b.decode("utf-8", errors="ignore") + "\n" + err_b.decode("utf-8", errors="ignore")
                         ).strip()
-                    except Exception as e:
+                    except (OSError, asyncio.TimeoutError) as e:
                         tool_out = f"Tool execution error: {e}"
 
                     if not message or message.strip() == "__TOOL_ONLY__":
@@ -1981,7 +2027,10 @@ async def dispatch_message(
             if over and sender.startswith("@"):
                 return {
                     "success": False,
-                    "error": f"Günlük token bütçesi doldu: {', '.join(over)} ({budget:,}). Kullanıcı onayı gerekir (team ask-user).",
+                    "error": (
+                        f"Günlük token bütçesi doldu: {', '.join(over)} ({budget:,}). "
+                        "Kullanıcı onayı gerekir (team ask-user)."
+                    ),
                 }
             if over:
                 budget_warning = f" UYARI: bütçe aşıldı ({', '.join(over)})."
@@ -1997,7 +2046,8 @@ async def dispatch_message(
                 or 0
             )
             still_open = conn.execute(
-                "SELECT 1 FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status IN ('queued', 'running', 'quota')",
+                "SELECT 1 FROM dispatch_queue WHERE team_name = ? AND "
+                "batch = ? AND status IN ('queued', 'running', 'quota')",
                 (team_name, last),
             ).fetchone()
             batch = last if (last and still_open) else last + 1
@@ -2018,7 +2068,8 @@ async def dispatch_message(
             elif skills and not ag_cid and ag_runtime == "agy":
                 skill_str = ", ".join(skills)
                 final_prompt = (
-                    f"[SİSTEM ROLÜ: {ag['name']} — {ag['role']} | Çalışma Dizini: {ag_wdir} | Aktif Yetenekler: {skill_str}]\n\n"
+                    f"[SİSTEM ROLÜ: {ag['name']} — {ag['role']} | Çalışma "
+                    f"Dizini: {ag_wdir} | Aktif Yetenekler: {skill_str}]\n\n"
                     f"{enriched_message}"
                 )
 
@@ -2131,14 +2182,16 @@ async def _delayed_headless_launch(
             )
             if not ok and is_interrupted and "sınırını aştı" not in (output or "") and "bitmedi" not in (output or ""):
                 print(
-                    f"[RESILIENCE] {team_name}:{target} kesintiye uğradı (uyku/bağlantı kopması). Otomatik kurtarma başlatılıyor (4s)..."
+                    f"[RESILIENCE] {team_name}:{target} kesintiye uğradı "
+                    "(uyku/bağlantı kopması). Otomatik kurtarma başlatılıyor (4s)..."
                 )
                 await asyncio.sleep(4.0)
                 active_cid = _agent_cid(team_name, target, is_lead) or cid
                 resume_prompt = (
                     "[SİSTEM UYKU/AĞ KESİNTİSİ SONRASI KURTARMA]\n"
                     "Bağlantı koptu ve sistem yeniden bağlandı. "
-                    "Lütfen çalışma dizinindeki son durumu ve dosyaları kontrol et; görevine kaldığın yerden eksiksiz devam et.\n\n"
+                    "Lütfen çalışma dizinindeki son durumu ve dosyaları kontrol "
+                    "et; görevine kaldığın yerden eksiksiz devam et.\n\n"
                     f"Görev:\n{prompt}"
                 )
                 try:
@@ -2162,8 +2215,10 @@ async def _delayed_headless_launch(
                     else:
                         output = f"{output}\n[Kurtarma denemesi başarısız]: {retry_out}"
                 except Exception as e_ret:
+                    logging.exception("resume retry failed for %s:%s", team_name, target)
                     output = f"{output}\n[Kurtarma denemesi istisnası]: {e_ret}"
         except Exception as e:
+            logging.exception("agent turn failed for %s:%s", team_name, target)
             output = f"Hata: {e}"
         finally:
             # cost = growth of the old session (incl. a handoff turn) + everything the new session used
@@ -2192,7 +2247,8 @@ async def _delayed_headless_launch(
             team_name,
             sender,
             f"[GÖREV SONUCU #{queue_id} — {target} • {status}]\n{(output or '').strip()[-1500:]}\n\n"
-            f'Denetle: `team review {team_name} {queue_id} onay` veya `team review {team_name} {queue_id} ret "düzeltme notu"`',
+            f"Denetle: `team review {team_name} {queue_id} onay` veya "
+            f'`team review {team_name} {queue_id} ret "düzeltme notu"`',
             sender=target,
             msg_type="note",
             hops=hops + 1,
@@ -2207,7 +2263,8 @@ def _finished_batch_summary(team_name: str, queue_id: Optional[int]) -> str:
         if not row or not row["batch"]:
             return ""
         rows = conn.execute(
-            "SELECT id, target, status, result_preview FROM dispatch_queue WHERE team_name = ? AND batch = ? AND status != 'resumed' ORDER BY id",
+            "SELECT id, target, status, result_preview FROM dispatch_queue WHERE "
+            "team_name = ? AND batch = ? AND status != 'resumed' ORDER BY id",
             (team_name, row["batch"]),
         ).fetchall()
     if any(r["status"] in ("queued", "running", "quota") for r in rows):
@@ -2224,13 +2281,15 @@ def _finished_batch_summary(team_name: str, queue_id: Optional[int]) -> str:
 
 
 def batch_status(team_name: str) -> Dict[str, Any]:
-    """Latest lead batch: per-agent 'running' (has open task), 'done' or 'error'. Agents outside the batch are absent."""
+    """Latest lead batch: per-agent 'running' (has open task), 'done' or 'error'.
+    Agents outside the batch are absent."""
     with get_db() as conn:
         last = (
             conn.execute("SELECT MAX(batch) FROM dispatch_queue WHERE team_name = ?", (team_name,)).fetchone()[0] or 0
         )
         rows = conn.execute(
-            "SELECT target, status FROM dispatch_queue WHERE team_name = ? AND batch = ? AND batch > 0 AND status != 'resumed'",
+            "SELECT target, status FROM dispatch_queue WHERE team_name "
+            "= ? AND batch = ? AND batch > 0 AND status != 'resumed'",
             (team_name, last),
         ).fetchall()
     rank = {"running": 3, "quota": 2, "error": 1, "done": 0}
@@ -2406,7 +2465,8 @@ def list_tasks(team_name: str, include_closed: bool = False, limit: int = 60) ->
 async def review_task(
     team_name: str, task_id: int, approve: bool, note: str = "", reviewer: str = "User"
 ) -> Dict[str, Any]:
-    """Lead/user verdict on a finished task. A rejection with a note sends the fix request straight back to the agent."""
+    """Lead/user verdict on a finished task.
+    A rejection with a note sends the fix request straight back to the agent."""
     with get_db() as conn:
         row = conn.execute(
             "SELECT * FROM dispatch_queue WHERE id = ? AND team_name = ? AND msg_type = 'dispatch'",
@@ -2497,7 +2557,7 @@ def discover_agy_ecosystem() -> Dict[str, Any]:
                     )
                     for s in p_skills:
                         skills.append({"name": s, "plugin": p.get("name")})
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError, TypeError):
             pass
 
         try:
@@ -2516,7 +2576,7 @@ def discover_agy_ecosystem() -> Dict[str, Any]:
                                 "command": parts[3] if len(parts) > 3 else "",
                             }
                         )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
     with get_db() as conn:

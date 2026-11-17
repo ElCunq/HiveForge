@@ -1,10 +1,13 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 import asyncio
-import engine, server
+import engine
+import server
 
 engine.init_db()
 proj = tempfile.mkdtemp()
@@ -18,10 +21,10 @@ os.chdir(proj)
 assert engine.lock_files("t", "@a", ["a.rs", "./a.rs"])["locked"] == [f1]
 r = engine.lock_files("t", "@b", [f2, f1])
 assert not r["success"] and r["conflicts"] == {f1: "@a"} and r["locked"] == []
-assert [l["path"] for l in engine.list_file_locks("t")] == [f1], "b.rs çakışmada kilitlenmemeli"
+assert [lk["path"] for lk in engine.list_file_locks("t")] == [f1], "b.rs çakışmada kilitlenmemeli"
 assert engine.lock_files("t", "@a", [f1])["success"], "kendi kilidini tekrar almak sorun olmamalı"
 assert engine.unlock_files("t", "@b", [f1]) == 0, "başkasının kilidi açılamaz"
-assert any(l["scope"] == "hiveforge" and l["agent"] == "@a" for l in server.scan_team_locks("t", proj))
+assert any(lk["scope"] == "hiveforge" and lk["agent"] == "@a" for lk in server.scan_team_locks("t", proj))
 
 # a finished task releases its agent's locks
 engine.find_interactive_tmux_pane = lambda **k: None

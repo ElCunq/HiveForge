@@ -1,9 +1,12 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
-import asyncio, time, types
+import asyncio
+import time
 import engine
 
 engine.init_db()
@@ -23,7 +26,10 @@ async def fake_turn(team, target, runtime, model, cid, *a):
 
 real_turn = engine.execute_headless_agent_turn
 engine.execute_headless_agent_turn = fake_turn
-alerts = lambda: [i["message"] for i in engine.list_inbox("t") if i["sender"] == "HiveForge"]
+
+
+def alerts():
+    return [i["message"] for i in engine.list_inbox("t") if i["sender"] == "HiveForge"]
 
 
 async def main():

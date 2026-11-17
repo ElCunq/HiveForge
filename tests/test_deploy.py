@@ -1,9 +1,14 @@
-import os, sys, tempfile
+import os
+import sys
+import tempfile
 
 os.environ.setdefault("AGY_TEAMS_DIR", tempfile.mkdtemp())
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
-import subprocess, threading, io, contextlib
+import subprocess
+import threading
+import io
+import contextlib
 import engine
 
 engine.init_db()
@@ -11,7 +16,8 @@ with engine.get_db() as c:
     c.execute("INSERT INTO teams (name, project_dir) VALUES ('t', '/tmp')")
     for i, st in ((1, "approved"), (2, "done")):
         c.execute(
-            "INSERT INTO dispatch_queue (id, team_name, target, msg_type, message, status) VALUES (?, 't', '@a', 'dispatch', 'x', ?)",
+            "INSERT INTO dispatch_queue (id, team_name, target, msg_type, "
+            "message, status) VALUES (?, 't', '@a', 'dispatch', 'x', ?)",
             (i, st),
         )
 

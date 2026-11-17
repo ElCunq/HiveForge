@@ -31,7 +31,7 @@ if IS_WINDOWS:
     for _s in (sys.stdout, sys.stderr):
         try:
             _s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
+        except (AttributeError, OSError):
             pass
     os.system("")  # Windows konsolunda ANSI renk kodlarını etkinleştirir
 
@@ -57,7 +57,8 @@ def server_is_up() -> bool:
 
 
 def _systemd(action: str) -> bool:
-    """Linux: if install.sh set up hiveforge.service, let systemd own the server (a manual copy would fight it for the port)."""
+    """Linux: if install.sh set up hiveforge.service, let systemd own the server
+    (a manual copy would fight it for the port)."""
     if IS_WINDOWS or not (Path.home() / ".config/systemd/user/hiveforge.service").exists():
         return False
     return subprocess.run(["systemctl", "--user", action, "hiveforge.service"], capture_output=True).returncode == 0
@@ -197,7 +198,8 @@ def cmd_list(_args):
         for t in conn.execute("SELECT * FROM teams ORDER BY name ASC").fetchall():
             cnt = conn.execute("SELECT COUNT(*) FROM agents WHERE team_name=?", (t["name"],)).fetchone()[0]
             print(
-                f"{t['name']:<15} {'🟢 NATIVE READY':<16} {cnt:<8} {(t['lead_role'] or '')[:30]:<32} {t['project_dir'] or ''}"
+                f"{t['name']:<15} {'🟢 NATIVE READY':<16} {cnt:<8} "
+                f"{(t['lead_role'] or '')[:30]:<32} {t['project_dir'] or ''}"
             )
     print("=" * 110)
 
@@ -234,11 +236,13 @@ def cmd_agents(args):
         print("=" * 135)
         print(f"TAKIM: {tname.upper()} | Proje Dizini: {team['project_dir']}")
         print(
-            f"TECH LEAD (@lead) | CLI: {lruntime.upper():<7} | CID: {lcid[:8] if lcid else 'new':<8} | Durum: {lsnap['status'].upper():<8} | Bağlam: {lctx} | Harcanan: {lcum}"
+            f"TECH LEAD (@lead) | CLI: {lruntime.upper():<7} | CID: {lcid[:8] if lcid else 'new':<8} "
+            f"| Durum: {lsnap['status'].upper():<8} | Bağlam: {lctx} | Harcanan: {lcum}"
         )
         print("-" * 135)
         print(
-            f"{'ID':<4} {'HEDEF':<10} {'CLI':<8} {'AJAN ADI':<22} {'DURUM':<9} {'BAĞLAM / KALAN':<19} {'HARCANAN':<11} {'ARAÇ & SKILL'}"
+            f"{'ID':<4} {'HEDEF':<10} {'CLI':<8} {'AJAN ADI':<22} {'DURUM':<9} "
+            f"{'BAĞLAM / KALAN':<19} {'HARCANAN':<11} {'ARAÇ & SKILL'}"
         )
         print("-" * 135)
         for r in conn.execute("SELECT * FROM agents WHERE team_name=? ORDER BY aid ASC", (tname,)).fetchall():
@@ -252,7 +256,8 @@ def cmd_agents(args):
             ctx = f"{_fmt_tokens(tel.get('context_tokens', 0))} ({_fmt_tokens(tel.get('remaining_tokens', 0))} boş)"
             cum = _fmt_tokens(tel.get("cum_total_tokens", 0))
             print(
-                f"#{r['aid']:<3} {r['target']:<10} {rt.upper():<8} {r['name'][:21]:<22} {snap['status'].upper():<9} {ctx:<19} {cum:<11} {badge}"
+                f"#{r['aid']:<3} {r['target']:<10} {rt.upper():<8} {r['name'][:21]:<22} "
+                f"{snap['status'].upper():<9} {ctx:<19} {cum:<11} {badge}"
             )
         print("=" * 135)
     return 0
@@ -271,25 +276,31 @@ def cmd_tokens(args):
     print(f"HIVEFORGE TOKEN TELEMETRİSİ & KAYNAK YÖNETİMİ — TAKIM: {tname.upper()}")
     print("=" * 115)
     print(
-        f"  Toplam Harcanan:   {_fmt_tokens(analytics['total_tokens']):<10} (Giriş: {_fmt_tokens(analytics['total_input_tokens'])}, Çıkış: {_fmt_tokens(analytics['total_output_tokens'])})"
+        f"  Toplam Harcanan:   {_fmt_tokens(analytics['total_tokens']):<10} (Giriş: "
+        f"{_fmt_tokens(analytics['total_input_tokens'])}, Çıkış: {_fmt_tokens(analytics['total_output_tokens'])})"
     )
     print(
-        f"  Aktif Bağlam:      {_fmt_tokens(analytics['total_context_tokens'])} / {_fmt_tokens(analytics['total_context_limit'])} (%{analytics['total_context_pct']} Doluluk)"
+        f"  Aktif Bağlam:      {_fmt_tokens(analytics['total_context_tokens'])} / "
+        f"{_fmt_tokens(analytics['total_context_limit'])} (%{analytics['total_context_pct']} Doluluk)"
     )
     print(
-        f"  Kalan Kapasite:    {_fmt_tokens(analytics['total_remaining_tokens']):<10} (Tüm ajanların serbest bağlam toplamı)"
+        f"  Kalan Kapasite:    {_fmt_tokens(analytics['total_remaining_tokens']):<10} "
+        "(Tüm ajanların serbest bağlam toplamı)"
     )
     print(
-        f"  Önbellek İsabeti:  %{analytics['cache_hit_pct']} (Tasarruf edilen: {_fmt_tokens(analytics['total_cache_tokens'])})"
+        f"  Önbellek İsabeti:  %{analytics['cache_hit_pct']} (Tasarruf "
+        f"edilen: {_fmt_tokens(analytics['total_cache_tokens'])})"
     )
     top = analytics.get("top_consumer")
     if top:
         print(
-            f"  En Yüksek Tüketim: {top['target']} ({top['name']}) -> {_fmt_tokens(top['cum_total_tokens'])} (%{top['pct_of_team_tokens']})"
+            f"  En Yüksek Tüketim: {top['target']} ({top['name']}) -> "
+            f"{_fmt_tokens(top['cum_total_tokens'])} (%{top['pct_of_team_tokens']})"
         )
     print("-" * 115)
     print(
-        f"{'HEDEF':<9} {'CLI':<8} {'AJAN ADI':<22} {'AKTİF BAĞLAM':<20} {'KALAN KAPASİTE':<16} {'KÜMÜLATİF':<14} {'PAY'}"
+        f"{'HEDEF':<9} {'CLI':<8} {'AJAN ADI':<22} {'AKTİF BAĞLAM':<20} "
+        f"{'KALAN KAPASİTE':<16} {'KÜMÜLATİF':<14} {'PAY'}"
     )
     print("-" * 115)
     for ag in analytics.get("agents", []):
@@ -298,7 +309,8 @@ def cmd_tokens(args):
         cum_str = _fmt_tokens(ag["cum_total_tokens"])
         pay_str = f"%{ag['pct_of_team_tokens']}"
         print(
-            f"{ag['target']:<9} {ag['runtime'].upper():<8} {ag['name'][:21]:<22} {ctx_str:<20} {rem_str:<16} {cum_str:<14} {pay_str}"
+            f"{ag['target']:<9} {ag['runtime'].upper():<8} {ag['name'][:21]:<22} "
+            f"{ctx_str:<20} {rem_str:<16} {cum_str:<14} {pay_str}"
         )
     print("=" * 115)
     return 0
@@ -341,7 +353,8 @@ def cmd_create(args):
 def cmd_add_agent(args):
     if not args:
         print(
-            'Kullanım: team add-agent <takım> --name "İsim" --role "Rol" [--target "@tag"] [--runtime agy|claude|codex|aider|ollama] [--model "..."]'
+            'Kullanım: team add-agent <takım> --name "İsim" --role "Rol" [--target '
+            '"@tag"] [--runtime agy|claude|codex|aider|ollama] [--model "..."]'
         )
         return 1
     flags, _ = _parse_flags(
@@ -387,7 +400,7 @@ def cmd_add_agent(args):
     ensure_server_running()
     try:
         res = api_post("/api/team/add-agent", payload)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"[HATA] İstek gönderilemedi: {e}")
         return 1
     if res.get("success"):
@@ -408,7 +421,8 @@ def cmd_remove_agent(args):
 
 
 def _next_hop():
-    """Conversation depth of a message sent from inside an agent turn (HiveForge caps agent talk at 1 question + 1 answer)."""
+    """Conversation depth of a message sent from inside an agent turn
+    (HiveForge caps agent talk at 1 question + 1 answer)."""
     return int(os.environ.get("HIVE_HOPS") or 0) + 1 if os.environ.get("HIVE_AGENT") else 0
 
 
@@ -555,8 +569,8 @@ def cmd_locks(args):
         print("Kullanım: team locks <takım>")
         return 1
     locks = _engine().list_file_locks(args[0])
-    for l in locks:
-        print(f"{l['agent']:<12} {l['created_at']}  {l['path']}")
+    for lk in locks:
+        print(f"{lk['agent']:<12} {lk['created_at']}  {lk['path']}")
     if not locks:
         print("Aktif kilit yok.")
     return 0
@@ -673,7 +687,8 @@ def cmd_open(args):
     with engine.get_db() as conn:
         if target in ("@lead", "lead"):
             row = conn.execute(
-                "SELECT lead_cid as cid, project_dir as workspace_dir, 'Tech Lead' as name, lead_runtime as runtime, '' as model FROM teams WHERE name=?",
+                "SELECT lead_cid as cid, project_dir as workspace_dir, 'Tech Lead' as "
+                "name, lead_runtime as runtime, '' as model FROM teams WHERE name=?",
                 (team_name,),
             ).fetchone()
         else:
@@ -722,7 +737,8 @@ def cmd_watch(args):
                         if last_seen.get("lead") != sig:
                             last_seen["lead"] = sig
                             print(
-                                f"\n\033[1;35m--- [TECH LEAD @lead • {snap['status'].upper()} • Adım #{snap['telemetry']['steps']}] ---\033[0m"
+                                f"\n\033[1;35m--- [TECH LEAD @lead • {snap['status'].upper()} "
+                                f"• Adım #{snap['telemetry']['steps']}] ---\033[0m"
                             )
                             if snap["thinking"]:
                                 print(f"\033[33m🧠 Düşünce: {snap['thinking'][:200]}...\033[0m")
@@ -738,7 +754,8 @@ def cmd_watch(args):
                             last_seen[r["target"]] = sig
                             color = "\033[32m" if snap["status"] == "idle" else "\033[33m"
                             print(
-                                f"\n{color}=== [{r['name']} ({r['target']}) • {snap['status'].upper()} • Adım #{snap['telemetry']['steps']}] ===\033[0m"
+                                f"\n{color}=== [{r['name']} ({r['target']}) • {snap['status'].upper()} "
+                                f"• Adım #{snap['telemetry']['steps']}] ===\033[0m"
                             )
                             if snap["tool_calls"]:
                                 tools_s = ", ".join(f"{tc['name']}({tc['detail']})" for tc in snap["tool_calls"][-3:])
@@ -757,7 +774,7 @@ def cmd_ui(args):
     if os.environ.get("HIVEFORGE_NO_BROWSER") != "1":
         try:
             webbrowser.open(API_URL)
-        except Exception:
+        except webbrowser.Error:
             pass
     print("=" * 66)
     print(f"🚀 HiveForge Kokpiti Hazır: {API_URL}")
@@ -776,7 +793,8 @@ def cmd_server(_args):
 def cmd_tmux(_args):
     # Linux/macOS: `team tmux` is handled by the bin/team wrapper before reaching here.
     print(
-        "[BİLGİ] tmux Mission Control yalnızca Linux/macOS'ta `team tmux` ile çalışır. Bunun yerine: hive watch <takım> [hedef]"
+        "[BİLGİ] tmux Mission Control yalnızca Linux/macOS'ta `team "
+        "tmux` ile çalışır. Bunun yerine: hive watch <takım> [hedef]"
     )
     return 1
 
