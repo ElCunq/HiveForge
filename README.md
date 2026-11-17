@@ -12,7 +12,9 @@ It exists because running several agent CLIs on the same repo by hand breaks dow
 other, they edit the same files, they poll each other for status and burn tokens, and you lose track of who is doing
 what.
 
-<!-- TODO: 30-second demo GIF: docs/demo.gif -->
+![HiveForge demo: a task goes to the lead, gets split across Codex and Antigravity workers, and the results come back](docs/demo.gif)
+
+<sub>Scripted reel of the cockpit (`docs/demo.html`, rendered with `docs/tools/render_demo.py`), not a screen recording.</sub>
 
 ## What it does
 
